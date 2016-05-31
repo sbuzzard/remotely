@@ -97,7 +97,6 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
           )
 
         } flatMap(_ => Task.fail(error))
-
       }
   }
 
