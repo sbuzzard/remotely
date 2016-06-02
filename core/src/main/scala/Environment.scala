@@ -17,16 +17,18 @@
 
 package remotely
 
+import fs2._
+
 import java.net.InetSocketAddress
 import javax.net.ssl.SSLEngine
-import shapeless._
 
-import scala.reflect.runtime.universe.TypeTag
-import scodec.{Codec,Decoder,Encoder}
-import scodec.bits.{BitVector}
-import scalaz.stream.Process
-import scalaz.concurrent.{Strategy,Task}
 import scala.concurrent.duration.DurationInt
+import scala.reflect.runtime.universe.TypeTag
+
+import scodec.{Codec,Decoder,Encoder}
+import scodec.bits.BitVector
+
+import shapeless._
 
 /**
  * A collection of codecs and values, which can be populated
@@ -61,35 +63,35 @@ case class Environment[H <: HList](codecs: Codecs[H], values: Values) {
   def values(v: Values): Environment[H] =
     this.populate(_ => v)
 
-  private def serverHandler(monitoring: Monitoring): Handler = { bytes =>
+  private def serverHandler(monitoring: Monitoring)(implicit S: Strategy): Handler = { bytes =>
       // we assume the input is a framed stream, and encode the response(s)
       // as a framed stream as well
-      bytes pipe Process.await1[BitVector] /*server.Handler.deframe*/ evalMap { bs =>
+      bytes.through(pipe.covary[Task, BitVector, BitVector](echo1)) /*server.Handler.deframe*/ evalMap { bs =>
         Server.handle(this)(bs)(monitoring)
       }
     }
 
   /**
     * start a netty server listening to the given address
-    * 
+    *
     * @param addr the address to bind to
     * @param strategy the strategy used for processing incoming requests
     * @param numBossThreads number of boss threads to create. These are
     * threads which accept incoming connection requests and assign
     * connections to a worker. If unspecified, the default of 2 will be used
-    * @param numWorkerThreads number of worker threads to create. If 
+    * @param numWorkerThreads number of worker threads to create. If
     * unspecified the default of 2 * number of cores will be used
     * @param capabilities, the capabilities which will be sent to the client upon connection
     */
   def serve(addr: InetSocketAddress,
-            strategy: Strategy = Strategy.DefaultStrategy,
+            strategy: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("remotely-server")),
             numBossThreads: Option[Int] = None,
             numWorkerThreads: Option[Int] = None,
             monitoring: Monitoring = Monitoring.empty,
             capabilities: Capabilities = Capabilities.default,
             sslParams: Option[SslParameters] = None): Task[Task[Unit]] =
     transport.netty.NettyServer.start(addr,
-                                      serverHandler(monitoring),
+                                      serverHandler(monitoring)(strategy),
                                       strategy,
                                       numBossThreads,
                                       numWorkerThreads,

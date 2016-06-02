@@ -38,13 +38,15 @@ Using remotely is straightforward, and getting started on a new project could no
 
 Remotely has the following dependencies:
 
-* `Scalaz 7.1.0`
-* `Scalaz Stream 0.7a`
-* `Scodec 1.7.0`
+* `Cats Core 0.6.0`
+* `Fs2 Core 0.9.0`
+* `Fs2 Cats 0.1.0`
+* `Fs2 I/O 0.1.0`
+* `Scodec 1.9.0`
 * `Apache Commons Pool 2.2`
-* `Netty 4.0.25.Final`
-* `Macro Paradise 2.0.1`
-* `Shapeless 2.1.0`
+* `Netty 4.1.0.Final`
+* `Macro Paradise 2.1.0`
+* `Shapeless 2.3.0`
 
 This is an important factor to keep in mind, as if you have clashing versions of these libraries on your classpath you will encounter strange runtime failures due to binary incompatibility.
 
@@ -189,7 +191,7 @@ object Main {
 
     val startServer = env.serve(address)
 
-    val shutdown = startServer.run
+    val shutdown = startServer.unsafeRun
 
   }
 }
@@ -205,14 +207,14 @@ This is super straightforward, but lets step through the values one by one.
 
 * `startServer`: Calling `env.serve(...)` returns A Task that when run will start the server, binding the process to the specified address.
 
-* `shutdown`: Calling `startServer.run` returns a new Task can be later used to shutdown the server, if necessary.
+* `shutdown`: Calling `startServer.unsafeRun` returns a new Task can be later used to shutdown the server, if necessary.
 
 The client on the other hand is similar:
 
 ```
 package oncue.svc.example
 
-import scalaz.concurrent.Task
+import java.util.Task
 import java.net.InetSocketAddress
 import remotely._, codecs._, transport.netty._
 
@@ -223,18 +225,18 @@ object Main {
 
     val address  = new InetSocketAddress("localhost", 8080)
 
-    val transport = NettyTransport.single(address).run
+    val transport = NettyTransport.single(address).unsafeRun
 
     val endpoint = Endpoint.single(transport)
 
     val f: Remote[Int] = FactorialClient.factorial(8)
 
-	val task: Task[Int] = f.runWithoutContext(endpoint)
+  val task: Task[Int] = f.runWithoutContext(endpoint)
 
     // then at the edge of the world, run it and print to the console
-    task.runAsync(println(_)
-    
-    transport.shutdown.run
+    task.unsafeRunAsync(println(_)
+
+    transport.shutdown.unsafeRun
   }
 }
 
@@ -248,9 +250,10 @@ Whilst `address` is the same value from the server, the typical case here of cou
 
 * `f`: Application of the remote function reference. Here we pass in the arguments needed by the remote function, and at compile time you will be forced to ensure that you have a `Codec` for all the arguments supplied, and said arguments must be in scope within that compilation unit (i.e. if the remote service uses custom structures you'll need to ensure you import those accordingly). At this point *no request has actually been made over the wire*.
 
-* `task`: In order to do something useful with the `Remote` instance its necessary to make a choice about what "context" this remote operation will be executed in. Again, this is covered specifically in the [detailed documentation](http://), but for now we shall elect to run without a context, by way of the `runWithoutContext` function. There still has been no network I/O occur; we have simply applied the function operation and transformed it into a scalaz `Task`.
+* `task`: In order to do something useful with the `Remote` instance its necessary to make a choice about what "context" this remote operation will be executed in. Again, this is covered specifically in the [detailed documentation](http://), but for now we shall elect to run without a context, by way of the `runWithoutContext` function. There still has been no network I/O occur; we have simply applied the function operation and transformed it into an fs2 `Task`.
 
-Finally, the function does network I/O to talk to the server when the `Task` is executed (using the `runAsync` method here). You can learn more about the `Task` monad [on this blog post](http://timperrett.com/2014/07/20/scalaz-task-the-missing-documentation/).
+Finally, the function does network I/O to talk to the server when the `Task` is executed (using the `unsafeRunAsync` method here). You can learn more about the `Task` monad [here](https://github.com/functional-streams-for-scala/fs2/blob/series/0.9/docs/guide.md#concurrency/).
+
 
 
 

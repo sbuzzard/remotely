@@ -20,14 +20,14 @@ package example.benchmark
 package server
 package test
 
+import fs2.Task
+
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import remotely.ServerException
 import remotely.transport.netty._
 import remotely.{Monitoring,Response,Endpoint,codecs}, codecs._, Response.Context
 import scala.collection.immutable.IndexedSeq
-import scalaz.{-\/,\/-}
-import scalaz.concurrent.{Strategy,Task}
 import remotely._
 import java.util.concurrent._
 import protocol._
@@ -39,22 +39,22 @@ class BenchmarkServerSpec extends FlatSpec
 
   val addr = new java.net.InetSocketAddress("localhost", 9001)
   val server = new BenchmarkServerImpl
-  val shutdown: Task[Unit] = server.environment.serve(addr).run
+  val shutdown: Task[Unit] = server.environment.serve(addr).unsafeRun
 
-  val endpoint = Endpoint.single(NettyTransport.single(addr).run)
+  val endpoint = Endpoint.single(NettyTransport.single(addr).unsafeRun())
 
   import remotely.Remote.implicits._
   import remotely.codecs._
 
   override def afterAll(){
     Thread.sleep(500)
-    shutdown.run
+    shutdown.unsafeRun
   }
 
   behavior of "identityBig"
   it should "work" in {
     val big = Big(1)
-    val res = BenchmarkClient.identityBig(toBigW(big)).runWithoutContext(endpoint).run
+    val res = BenchmarkClient.identityBig(toBigW(big)).runWithoutContext(endpoint).unsafeRun
 
     fromBigW(res) should equal (big)
   }
@@ -68,7 +68,7 @@ class BenchmarkServerSpec extends FlatSpec
   it should "work" in {
     val small = Small(Map.empty, List("asdf"))
     val big = Large(1, Nil, "string2", Map("key" -> "value"), List(Medium(2, "string", List(small), None)), Vector(small))
-    val res = BenchmarkClient.identityLarge(toLargeW(big)).runWithoutContext(endpoint).run
+    val res = BenchmarkClient.identityLarge(toLargeW(big)).runWithoutContext(endpoint).unsafeRun
 
     fromLargeW(res) should equal (big)
   }

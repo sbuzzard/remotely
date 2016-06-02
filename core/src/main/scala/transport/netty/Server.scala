@@ -18,6 +18,8 @@
 package remotely
 package transport.netty
 
+import cats.data.Xor
+import fs2.{async,pipe,Strategy,Stream,Task}
 import java.util.concurrent.Executors
 import io.netty.channel._, socket.SocketChannel, nio.NioEventLoopGroup
 import io.netty.channel.socket.nio.NioServerSocketChannel
@@ -25,20 +27,14 @@ import io.netty.buffer.Unpooled
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.handler.ssl.SslContext
 import java.net.InetSocketAddress
-import scalaz.concurrent.{Strategy,Task}
-import scalaz.stream.{Process,async}
 import scodec.bits.BitVector
-import scalaz.{-\/,\/}
 
 private[remotely] class NettyServer(handler: Handler,
-                                    strategy: Strategy,
                                     numBossThreads: Int,
                                     numWorkerThreads: Int,
                                     capabilities: Capabilities,
                                     logger: Monitoring,
-                                    sslContext: Option[(SslContext,Boolean)]) {
-
-
+                                    sslContext: Option[(SslContext,Boolean)])(implicit S: Strategy) {
   val bossThreadPool = new NioEventLoopGroup(numBossThreads, namedThreadFactory("nettyBoss"))
   val workerThreadPool = new NioEventLoopGroup(numWorkerThreads, namedThreadFactory("nettyWorker"))
 
@@ -84,7 +80,7 @@ private[remotely] class NettyServer(handler: Handler,
                                     p.removeLast()
                                     p.addLast("deframe", new Deframe())
                                     p.addLast("enframe", Enframe)
-                                    val _ = p.addLast("deframed handler", new ServerDeframedHandler(handler, strategy, logger) )
+                                    val _ = p.addLast("deframed handler", new ServerDeframedHandler(handler, logger) )
                                   } else {
                                     logger.negotiating(Option(ctx.channel.remoteAddress), s"failed to send capabilities", Option(cf.cause))
                                     shutdown()
@@ -118,32 +114,31 @@ object NettyServer {
     */
   def start(addr: InetSocketAddress,
             handler: Handler,
-            strategy: Strategy = Strategy.DefaultStrategy,
+            strategy: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("remotely-server")),
             bossThreads: Option[Int] = None,
             workerThreads: Option[Int] = None,
             capabilities: Capabilities = Capabilities.default,
             logger: Monitoring = Monitoring.empty,
             sslParameters: Option[SslParameters] = None): Task[Task[Unit]] = {
-
     SslParameters.toServerContext(sslParameters) map { ssl =>
       logger.negotiating(Some(addr), s"got ssl parameters: $ssl", None)
       val numBossThreads = bossThreads getOrElse 2
       val numWorkerThreads = workerThreads getOrElse Runtime.getRuntime.availableProcessors.max(4)
 
-      val server = new NettyServer(handler, strategy, numBossThreads, numWorkerThreads, capabilities, logger, ssl.map(_ -> sslParameters.fold(true)(p => p.requireClientAuth)))
+      val server = new NettyServer(handler, numBossThreads, numWorkerThreads, capabilities, logger, ssl.map(_ -> sslParameters.fold(true)(p => p.requireClientAuth)))(strategy)
       val b = server.bootstrap
 
       logger.negotiating(Some(addr), s"about to bind", None)
       val channel = b.bind(addr)
       logger.negotiating(Some(addr), s"bound", None)
-      Task.async[Unit] { cb =>
+      Task.unforkedAsync[Unit] { cb =>
         val _ = channel.addListener(new ChannelFutureListener {
                                       override def operationComplete(cf: ChannelFuture): Unit = {
                                         server.shutdown()
                                         if(cf.isSuccess) {
                                           cf.channel.close().awaitUninterruptibly()
                                         }
-                                        cb(\/.right(()))
+                                        cb(Right(()))
                                       }
                                     })
       }
@@ -158,9 +153,9 @@ object NettyServer {
   * every time we see a boundary, we close one stream, open a new
   * one, and setup a new outgoing stream back to the client.
   */
-class ServerDeframedHandler(handler: Handler, strategy: Strategy, logger: Monitoring) extends SimpleChannelInboundHandler[Framed] {
+class ServerDeframedHandler(handler: Handler, logger: Monitoring)(implicit S: Strategy) extends SimpleChannelInboundHandler[Framed] {
 
-  var queue: Option[async.mutable.Queue[BitVector]] = None
+  @volatile private var queue: Option[async.mutable.Queue[Task, Option[BitVector]]] = None
 
   //
   //  We've getting some bits, make sure we have a queue open if these
@@ -173,53 +168,46 @@ class ServerDeframedHandler(handler: Handler, strategy: Strategy, logger: Monito
   //    - evalMap that stream onto the side effecty "Context" to write
   //      bytes back to to the client (i hate the word context)
   //
-  private def ensureQueue(ctx: ChannelHandlerContext): async.mutable.Queue[BitVector] = queue match {
-    case None =>
-      logger.negotiating(Option(ctx.channel.remoteAddress), "creating queue", None)
-      val queue1 = async.unboundedQueue[BitVector](strategy)
-      queue = Some(queue1)
-      val stream = queue1.dequeue
-
-      val framed = handler(stream) map (Bits(_)) fby Process.emit(EOS)
-      val write: Task[Unit] = framed.evalMap { b =>
-        Task.delay {
-          ctx.write(b)
-        }
-      }.run.flatMap { _ => Task.delay{ctx.flush(); ()} }
-
-      write.runAsync {
-        case -\/(e) => fail(s"uncaught exception in connection-processing logic: $e", ctx)
-        case _ =>
-      }
-      queue1
-    case Some(q) => q
+  private def ensureQueue(ctx: ChannelHandlerContext): Task[async.mutable.Queue[Task, Option[BitVector]]] = {
+    val newQueue = for {
+      _ <- Task.delay(logger.negotiating(Option(ctx.channel.remoteAddress), "creating queue", None))
+      q <- async.unboundedQueue[Task, Option[BitVector]]
+      framed = handler(q.dequeue.through(pipe.unNoneTerminate)).map(Bits(_)).append(Stream.emit(EOS))
+      _ <- Task.start(framed.evalMap { b => Task.delay(ctx.write(b)) }.run flatMap { _ => Task.delay(ctx.flush) })
+      _ <- Task.delay(queue = Some(q))
+    } yield q
+    Task.delay(queue) flatMap { _.fold(newQueue) { Task.now } }
   }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
     ee.printStackTrace()
-    fail(ee.getMessage, ctx)
+    fail(ee.getMessage, ctx).unsafeRun
   }
 
   // there has been an error
-  private def fail(message: String, ctx: ChannelHandlerContext): Unit = {
-    queue.foreach(_.fail(new Throwable(message)).runAsync(Function.const(())))
-    val _ = ctx.channel.close() // should this be disconnect? is there a difference
-  }
+  private def fail(message: String, ctx: ChannelHandlerContext): Task[Unit] = for {
+    _ <- Task.delay(ctx.channel.close())
+    _ <- closeQueue(ctx)
+  } yield ()
 
   // we've seen the end of the input, close the queue writing to the input stream
-  private def close(ctx: ChannelHandlerContext): Unit = {
-    queue.foreach(_.close.runAsync(Function.const(())))
-    logger.negotiating(Option(ctx.channel.remoteAddress), "closing queue", None)
-    queue = None
-  }
-
-  override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit =
-    f match {
-      case Bits(bv) =>
-        val queue = ensureQueue(ctx)
-        queue.enqueueOne(bv).runAsync(Function.const(()))
-      case EOS =>
-        close(ctx)
+  private def closeQueue(ctx: ChannelHandlerContext): Task[Unit] = for {
+    _ <- Task.delay(logger.negotiating(Option(ctx.channel.remoteAddress), "shutting down queue", None))
+    q <- Task.delay {
+      val q = queue
+      queue = None
+      q
     }
+    _ <- q.fold(Task.now(())) { _.enqueue1(Option.empty[BitVector]) }
+  } yield ()
+
+  override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit = (f match {
+    case Bits(bv) => for {
+      q <- ensureQueue(ctx)
+      _ <- q.enqueue1(Some(bv))
+    } yield ()
+    case EOS =>
+      closeQueue(ctx)
+  }).unsafeRun
 }
 

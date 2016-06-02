@@ -28,33 +28,33 @@ class ServerErrors extends FlatSpec with Matchers {
   it should "throw the appropriate error if missing encoder for the response" in {
     val address = new java.net.InetSocketAddress("localhost", 9013)
 
-    val endpoint = (NettyTransport.single(address) map Endpoint.single).run
+    val endpoint = (NettyTransport.single(address) map Endpoint.single).unsafeRun
 
     val server = new CountServer
 
-    val shutdown = server.environment.serve(address).run
+    val shutdown = server.environment.serve(address).unsafeRun
 
     val call = Remote.local(true).runWithoutContext(endpoint)
 
     val expectedMsg = (s"[decoding] server does not have response serializer for: ${Remote.toTag[Boolean]}")
 
-    try(call.run) catch {
+    try(call.unsafeRun) catch {
       case se: ServerException ⇒ se.getMessage should startWith(expectedMsg)
       case huh: Exception      ⇒ huh.printStackTrace(); fail(huh)
     }
 
-    shutdown.run
+    shutdown.unsafeRun
   }
 
   behavior of "incompatible reference on server"
   it should "throw the appropriate error if there is some kind of reference mismatch" in {
     val address = new java.net.InetSocketAddress("localhost", 9077)
 
-    val endpoint = (NettyTransport.single(address) map Endpoint.single).run
+    val endpoint = (NettyTransport.single(address) map Endpoint.single).unsafeRun
 
     val server = new CountServer
 
-    val shutdown = server.environment.serve(address).run
+    val shutdown = server.environment.serve(address).unsafeRun
 
     val wrongRef = Remote.ref[(Int, Int) => Int]("ping")
 
@@ -62,11 +62,11 @@ class ServerErrors extends FlatSpec with Matchers {
 
     val expectedMsg = ("[validation] server values: <Set(ping: Int => Int, describe: List[remotely.Signature])> does not have referenced values:\n ping: (Int, Int) => Int")
 
-    try(call.run) catch {
+    try(call.unsafeRun) catch {
       case se: ServerException ⇒ se.getMessage should startWith(expectedMsg)
       case huh: Exception      ⇒ huh.printStackTrace(); fail(huh)
     }
 
-    shutdown.run
+    shutdown.unsafeRun
   }
 }

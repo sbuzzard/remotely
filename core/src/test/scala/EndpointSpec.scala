@@ -17,11 +17,12 @@
 
 package remotely
 
+import fs2.Stream
+
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 import remotely.transport.netty.NettyTransport
 
 import scala.concurrent.duration.DurationInt
-import scalaz.stream.Process
 
 class EndpointSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
   behavior of "failoverChain"
@@ -29,14 +30,14 @@ class EndpointSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
     val goodAddress = new java.net.InetSocketAddress("localhost", 9007)
     val badAddress = new java.net.InetSocketAddress("localhost", 9009)
 
-    val goodEndpoint = (NettyTransport.single(goodAddress) map Endpoint.single).run
-    val badEndpoint = (NettyTransport.single(badAddress) map Endpoint.single).run
+    val goodEndpoint = (NettyTransport.single(goodAddress) map Endpoint.single).unsafeRun
+    val badEndpoint = (NettyTransport.single(badAddress) map Endpoint.single).unsafeRun
 
-    def endpoints: Process[Nothing,Endpoint] = Process.emitAll(List(badEndpoint, goodEndpoint))
+    def endpoints: Stream[Nothing,Endpoint] = Stream.emits(List(badEndpoint, goodEndpoint))
 
     val server = new CountServer
 
-    val shutdown = server.environment.serve(goodAddress).run
+    val shutdown = server.environment.serve(goodAddress).unsafeRun
 
     val endpoint = Endpoint.failoverChain(10.seconds, endpoints)
 
@@ -46,10 +47,10 @@ class EndpointSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
 
     val call = evaluate(endpoint, Monitoring.empty)(CountClient.ping(1))
 
-    val i: Int = call.apply(Context.empty).run
-    val j: Int = call.apply(Context.empty).run
+    val i: Int = call.apply(Context.empty).unsafeRun
+    val j: Int = call.apply(Context.empty).unsafeRun
     j should be (2)
 
-    shutdown.run
+    shutdown.unsafeRun
   }
 }

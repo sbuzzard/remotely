@@ -26,19 +26,19 @@ import transport.netty._
 class ProtocolSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
   val addr = new java.net.InetSocketAddress("localhost", 9002)
   val server = new TestServer
-  val shutdown = server.environment.serve(addr).run
+  val shutdown = server.environment.serve(addr).unsafeRun
 
-  val endpoint = (NettyTransport.single(addr, monitoring = Monitoring.consoleLogger("ProtocolSpec")) map Endpoint.single).run
+  val endpoint = (NettyTransport.single(addr, monitoring = Monitoring.consoleLogger("ProtocolSpec")) map Endpoint.single).unsafeRun
 
   it should "foo" in {
     import remotely.Remote.implicits._
-    val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).run
-    val lst: List[Int] = Client.foo(9).runWithContext(endpoint, Context.empty).run
+    val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).unsafeRun
+    val lst: List[Int] = Client.foo(9).runWithContext(endpoint, Context.empty).unsafeRun
   }
 
   override def afterAll(){
     Thread.sleep(500)
-    shutdown.run
+    shutdown.unsafeRun
   }
 }
 

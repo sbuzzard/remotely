@@ -17,8 +17,8 @@
 
 package remotely
 
-import scalaz._
-import scalaz.concurrent.Task
+import fs2._
+import fs2.util._
 import scala.concurrent.duration._
 
 case object CircuitBreakerOpen extends Exception
@@ -34,7 +34,7 @@ class CircuitBreaker(timeout: Duration,
   }
 
   def apply[A](a: Task[A]): Task[A] = {
-    def doAttempt: Task[A] = a.onFinish{
+    def doAttempt: Task[A] = a.bestEffortOnFinish {
       case Some(e) => addFailure
       case None => close
     }

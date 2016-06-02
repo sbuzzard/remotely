@@ -18,9 +18,10 @@
 package remotely
 package examples
 
+import fs2.Task
+
 import codecs._
 import Remote.implicits._
-import scalaz.concurrent.Task
 import transport.netty._
 
 /**
@@ -52,8 +53,8 @@ object Multiservice extends App {
 
   // Serve these functions
   val addr1 = new java.net.InetSocketAddress("localhost", 8081)
-  val transport = NettyTransport.single(addr1).run
-  val stopA = env1.serve(addr1, monitoring = Monitoring.consoleLogger("[service-a]")).run
+  val transport = NettyTransport.single(addr1).unsafeRun
+  val stopA = env1.serve(addr1, monitoring = Monitoring.consoleLogger("[service-a]")).unsafeRun
 
   // And expose an `Endpoint` for making requests to this service
   val serviceA: Endpoint = Endpoint.single(transport)
@@ -101,8 +102,8 @@ object Multiservice extends App {
 
   // Serve these functions
   val addr2 = new java.net.InetSocketAddress("localhost", 8082)
-  val stopB = env2.serve(addr2, monitoring=Monitoring.consoleLogger("[service-b]")).run
-  val transport2 = NettyTransport.single(addr2).run
+  val stopB = env2.serve(addr2, monitoring=Monitoring.consoleLogger("[service-b]")).unsafeRun
+  val transport2 = NettyTransport.single(addr2).unsafeRun
   val serviceB: Endpoint = Endpoint.single(transport2)
 
   try {
@@ -113,20 +114,20 @@ object Multiservice extends App {
     val r3: Task[Double] = average3((0 to 10).map(_.toDouble).toList).runWithContext(at = serviceB, ctx, M)
     val r4: Task[Double] = average4((1 to 5).map(_.toDouble).toList).runWithContext(at = serviceB, ctx, M)
     val r5: Task[Double] = average5((1 to 5).map(_.toDouble).toList).runWithContext(at = serviceB, ctx, M)
-    println { "RESULT 1: " + r1.run }
+    println { "RESULT 1: " + r1.unsafeRun }
     println
-    println { "RESULT 2: " + r2.run }
+    println { "RESULT 2: " + r2.unsafeRun }
     println
-    println { "RESULT 3: " + r3.run }
+    println { "RESULT 3: " + r3.unsafeRun }
     println
-    println { "RESULT 4: " + r4.run }
+    println { "RESULT 4: " + r4.unsafeRun }
     println
-    println { "RESULT 5: " + r5.run }
+    println { "RESULT 5: " + r5.unsafeRun }
   }
   finally {
-    stopA.run
-    stopB.run
-    transport.shutdown.run
-    transport2.shutdown.run
+    stopA.unsafeRun
+    stopB.unsafeRun
+    transport.shutdown.unsafeRun
+    transport2.shutdown.unsafeRun
   }
 }

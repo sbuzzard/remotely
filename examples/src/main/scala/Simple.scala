@@ -18,9 +18,10 @@
 package remotely
 package examples
 
+import fs2.Task
+
 import java.net.InetSocketAddress
 import remotely.transport.netty.NettyTransport
-import scalaz.concurrent.{Strategy,Task}
 import codecs._
 
 object Simple {
@@ -66,17 +67,17 @@ object SimpleMain extends App {
   println(env)
 
   // create a server for this environment
-  val server = env.serve(addr, monitoring = Monitoring.consoleLogger("[server]")).run
+  val server = env.serve(addr, monitoring = Monitoring.consoleLogger("[server]")).unsafeRun
 
-  val transport = NettyTransport.single(addr).run
+  val transport = NettyTransport.single(addr).unsafeRun
   val expr: Remote[Int] = sum(List(0,1,2,3,4))
   val loc: Endpoint = Endpoint.single(transport)
   val result: Task[Int] = expr.runWithContext(loc, Response.Context.empty, Monitoring.consoleLogger("[client]"))
 
   // running a couple times just to see the latency improve for subsequent reqs
-  try println { result.run; result.run; result.run }
+  try println { result.unsafeRun; result.unsafeRun; result.unsafeRun }
   finally {
-    transport.shutdown.run
-    server.run
+    transport.shutdown.unsafeRun
+    server.unsafeRun
   }
 }

@@ -6,7 +6,7 @@ section: "manual"
 
 # Manual
 
-*Remotely* is a sophisticated but simple system. There are a few core concepts and then a set of associated details. Some of these details are important to know, and others might just catch your interest. 
+*Remotely* is a sophisticated but simple system. There are a few core concepts and then a set of associated details. Some of these details are important to know, and others might just catch your interest.
 
 <a name="codecs"></a>
 
@@ -16,7 +16,7 @@ One of the most important elements of *Remotely* is its fast, lightweight serial
 
 By default, *Remotely* ships with the ability to serialise / deserialise the following "primitive" types:
 
-* `A \/ B` (scalaz.\/, otherwise known as a disjunction)* `Array[Byte]`* `Boolean`* `Double`* `Either[A,B]`* `Float`* `IndexedSeq[A]`* `Int` (both 32 and 64)* `List[A]`* `Map[A,B]`* `Option[A]`* `Set[A]`* `SortedMap[A,B]`* `SortedSet[A]`* `String` (encoded with UTF8)* `Tuple2...7`
+* `Either[A, B]`* `Array[Byte]`* `Boolean`* `Double`* `Either[A,B]`* `Float`* `IndexedSeq[A]`* `Int` (both 32 and 64)* `List[A]`* `Map[A,B]`* `Option[A]`* `Set[A]`* `SortedMap[A,B]`* `SortedSet[A]`* `String` (encoded with UTF8)* `Tuple2...7`
 * `remotely.Response.Context`
 
 Often these built-in defaults will be all you need, but there might be times where it feels like it would be more appropriate do provide a "wire type" (that is, a datatype that represents the external wire API - **NOT** a data type that forms part of your core domain model). Typically this happens when you have a convoluted structure or a very "stringly-typed" interface (e.g. `Map[String, Map[String, Int]]` - who knows what on earth the author intended here!). In this cases, implementing custom codecs for your protocol seems attractive, and fortunatly its really simple to do:
@@ -72,7 +72,7 @@ scala> FactorialClient.factorial(1)
  found   : Int(1)
  required: remotely.Remote[Int]
               FactorialClient.factorial(1)
-``` 
+```
 
 That didnt go as planned! As it turns out, `Remote` function references can only be applied using values that have been explicitly lifted into a `Remote`  context, and *Remotely* comes with several convenient combinators to do that:
 
@@ -98,11 +98,11 @@ Now that you have a `Remote` function and you know how to apply arguments (apply
 
 * `Endpoint.empty`: create an empty endpoint, with no reachable locations in the stream.
 
-* `Endpoint.single`: Create an endpoint representing a single IP:PORT location of a *Remotely* service. 
+* `Endpoint.single`: Create an endpoint representing a single IP:PORT location of a *Remotely* service.
 
-* `Endpoint.singleSSL`: Does the same as `single`, with the addition of using transport layer security (specifically, TLS1.2) 
+* `Endpoint.singleSSL`: Does the same as `single`, with the addition of using transport layer security (specifically, TLS1.2)
 
-Using these basic combinators, we can now execute the `Remote` against a given endpoint. In order to do this, you have to elect what "context" the remote call will carry with it. 
+Using these basic combinators, we can now execute the `Remote` against a given endpoint. In order to do this, you have to elect what "context" the remote call will carry with it.
 
 <a name="resiliancy"></a>
 
@@ -129,7 +129,7 @@ The followig are the primary functions of interest on the `Endpoint` object:
 
 A `Context` is essentially a primitive data type that allows a given function invokation to carry along some metadata. When designing *Remotely*, we envisinged the following use cases:
 
-* *Transitive Request Graphing*: in large systems, it becomes extreamly useful to understand which instances of any given service is actually taking traffic and what the call graph actually is from a given originating caller. In this frame, `Context` comes with a stack of request IDs which are generated on each roundtrip, and if service A calls service B, the caller of A will recive a stack of IDs that detnote the call all the way to B. Needless to say, this is incredibly useful for tracing, monitoring and debugging request graphs. 
+* *Transitive Request Graphing*: in large systems, it becomes extreamly useful to understand which instances of any given service is actually taking traffic and what the call graph actually is from a given originating caller. In this frame, `Context` comes with a stack of request IDs which are generated on each roundtrip, and if service A calls service B, the caller of A will recive a stack of IDs that detnote the call all the way to B. Needless to say, this is incredibly useful for tracing, monitoring and debugging request graphs.
 
 * *Experimentation*: The `Context` supports an arbitrary `Map[String,String]` of data that can be propagated along with the request for the purposes of experimentation (for example, an A/B testing token).
 
@@ -193,11 +193,11 @@ trait Monitoring { self =>
 }
 ```
 
-As you can see, the interface is incredibly simple, and it serves two primary functions: 
+As you can see, the interface is incredibly simple, and it serves two primary functions:
 
 1. To allow logging or tracing information to be dumped to a thrid-party system via the `handled` function, which contains the entire round-trip information.
 
-1. To provide sampling information about the duration of requests being serviced by this endpoint implementation. 
+1. To provide sampling information about the duration of requests being serviced by this endpoint implementation.
 
 <a name="responses"></a>
 

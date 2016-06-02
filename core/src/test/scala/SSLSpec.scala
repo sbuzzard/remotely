@@ -17,14 +17,18 @@
 
 package remotely
 
+import cats.data.OptionT
+import cats.implicits._
+import fs2.{Stream,Task}
+import fs2.interop.cats._
+
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import java.io.File
+import java.nio.file.Paths
 import Response.Context
 import transport.netty._
 import codecs._
-import scalaz.{\/-}
-import scalaz.stream.Process._
 
 class SSLSpec extends FlatSpec
     with Matchers
@@ -84,19 +88,19 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = Some(serverRequiringAuthParameters)).run
+                                            sslParams = Some(serverRequiringAuthParameters)).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = Some(clientAuthParameters)).run
+                                          sslParams = Some(clientAuthParameters)).unsafeRun
 
     val endpoint: Endpoint = Endpoint.single(transport)
 
     try {
-      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).run
+      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).unsafeRun
       fact should be (100)
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -105,19 +109,19 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = Some(serverRequiringAuthParameters)).run
+                                            sslParams = Some(serverRequiringAuthParameters)).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = Some(clientNoAuthParameters)).run
+                                          sslParams = Some(clientNoAuthParameters)).unsafeRun
 
     try {
       val endpoint: Endpoint = Endpoint.single(transport)
 
-      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).run
+      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).unsafeRun
       fact should be (100)
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -126,19 +130,19 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = Some(serverNoAuthParameters)).run
+                                            sslParams = Some(serverNoAuthParameters)).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = Some(clientNoAuthParameters)).run
+                                          sslParams = Some(clientNoAuthParameters)).unsafeRun
 
     try {
       val endpoint: Endpoint = Endpoint.single(transport)
 
-      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).run
+      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).unsafeRun
       fact should be (100)
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -147,19 +151,19 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = Some(serverNoAuthParameters)).run
+                                            sslParams = Some(serverNoAuthParameters)).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = Some(clientAuthParameters)).run
+                                          sslParams = Some(clientAuthParameters)).unsafeRun
 
     try {
       val endpoint: Endpoint = Endpoint.single(transport)
 
-      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).run
+      val fact: Int = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty).unsafeRun
       fact should be (100)
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -168,10 +172,10 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = None).run
+                                            sslParams = None).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = Some(clientNoAuthParameters)).run
+                                          sslParams = Some(clientNoAuthParameters)).unsafeRun
 
     try {
       val endpoint: Endpoint = Endpoint.single(transport)
@@ -180,7 +184,7 @@ class SSLSpec extends FlatSpec
 
       an[io.netty.handler.ssl.NotSslRecordException] should be thrownBy (
         try {
-          val _ = fact.run
+          val _ = fact.unsafeRun
         } catch {
           case t: io.netty.handler.ssl.NotSslRecordException =>
             throw t
@@ -189,8 +193,8 @@ class SSLSpec extends FlatSpec
             throw t
         })
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -200,20 +204,20 @@ class SSLSpec extends FlatSpec
 
     val shutdown = server.environment.serve(addr,
                                             monitoring = Monitoring.consoleLogger("SSLSpec-server"),
-                                            sslParams = Some(serverNoAuthParameters)).run
+                                            sslParams = Some(serverNoAuthParameters)).unsafeRun
     val transport = NettyTransport.single(addr,
                                           monitoring = Monitoring.consoleLogger("SSLSpec-client"),
-                                          sslParams = None).run
+                                          sslParams = None).unsafeRun
 
     try {
       val endpoint: Endpoint = Endpoint.single(transport)
 
       val fact = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty)
 
-      an[Exception] should be thrownBy fact.map(_ ⇒ ()).run
+      an[Exception] should be thrownBy fact.map(_ ⇒ ()).unsafeRun
     } finally {
-      shutdown.run
-      transport.shutdown.run
+      shutdown.unsafeRun
+      transport.shutdown.unsafeRun
     }
   }
 
@@ -225,63 +229,69 @@ class SSLSpec extends FlatSpec
 
   it should "be able to parse a PEM" in {
     pems foreach { pemName =>
-      val pemStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/$pemName")
-      val x = SSL.certFromPEM(pemStream).runLog.attemptRun.leftMap(println(_))
+      val pemPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/$pemName").getPath)
+      val x = SSL.certFromPEM(pemPath).runLog.unsafeAttemptRun
       x.isRight should be (true)
     }
   }
 
   it should "be able to parse a key" in {
     keys foreach { keyName =>
-      val keyStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/$keyName")
-      val x = SSL.keyFromPkcs8(keyStream).runLog.attemptRun.leftMap(println(_))
+      val keyPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/$keyName").getPath)
+      val x = SSL.keyFromPkcs8(keyPath).runLog.unsafeAttemptRun
       x.isRight should be (true)
     }
   }
 
   it should "be able to mutate a keystore" in {
-    val caPEMStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/CA.pem")
-    val clientPEMStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/client_cert.pem")
-    val clientKeyStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/client_key.pk8")
+    val caPEMPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/CA.pem").getPath)
+    val clientPEMPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/client_cert.pem").getPath)
+    val clientKeyPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/client_key.pk8").getPath)
 
     val keystore = SSL.emptyKeystore
     val x = (for {
-               ca <- SSL.certFromPEM(caPEMStream).last
-               cl <- SSL.certFromPEM(clientPEMStream).last
-               key <- SSL.keyFromPkcs8(clientKeyStream).last
-               _ <- eval {
-                 for {
-                   _ <- SSL.addCert(ca, "ca", keystore)
-                   _ <- SSL.addKey(key, List(ca, cl), "client", Array[Char](), keystore)
-                 } yield ()
+               caMaybe <- SSL.certFromPEM(caPEMPath).last
+               clMaybe <- SSL.certFromPEM(clientPEMPath).last
+               keyMaybe <-SSL.keyFromPkcs8(clientKeyPath).last
+               _ <- Stream.eval {
+                 (for {
+                   ca <- OptionT(Task.now(caMaybe))
+                   cl <- OptionT(Task.now(clMaybe))
+                   key <- OptionT(Task.now(keyMaybe))
+                   _ <- OptionT.liftF(SSL.addCert(ca, "ca", keystore))
+                   _ <- OptionT.liftF(SSL.addKey(key, List(ca, cl), "client", Array[Char](), keystore))
+                 } yield ()).value
                }
-             } yield()).run.attemptRun
+             } yield()).run.unsafeAttemptRun
 
-    x should be (\/-(()))
+    x should be (Right(()))
   }
 
   it should "be able to generate an SSLContext" in {
-    val caPEMStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/CA.pem")
-    val clientPEMStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/client_cert.pem")
-    val clientKeyStream = getClass.getClassLoader.getResourceAsStream(s"ssl-testing/client_key.pk8")
+    val caPEMPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/CA.pem").getPath)
+    val clientPEMPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/client_cert.pem").getPath)
+    val clientKeyPath = Paths.get(getClass.getClassLoader.getResource(s"ssl-testing/client_key.pk8").getPath)
 
     val keystore = SSL.emptyKeystore
     val keystoreTM = SSL.emptyKeystore
     val x = (for {
-               ca <- SSL.certFromPEM(caPEMStream).last
-               cl <- SSL.certFromPEM(clientPEMStream).last
-               key <- SSL.keyFromPkcs8(clientKeyStream).last
-               _ <- eval {
-                 for {
-                   _ <- SSL.addCert(ca, "ca", keystoreTM)
-                   _ <- SSL.addKey(key, List(ca, cl), "client", "changeit".toCharArray, keystore)
-                 } yield ()
+               caMaybe <- SSL.certFromPEM(caPEMPath).last
+               clMaybe <- SSL.certFromPEM(clientPEMPath).last
+               keyMaybe <- SSL.keyFromPkcs8(clientKeyPath).last
+               _ <- Stream.eval {
+                 (for {
+                   ca <- OptionT(Task.now(caMaybe))
+                   cl <- OptionT(Task.now(clMaybe))
+                   key <- OptionT(Task.now(keyMaybe))
+                   _ <- OptionT.liftF(SSL.addCert(ca, "ca", keystoreTM))
+                   _ <- OptionT.liftF(SSL.addKey(key, List(ca, cl), "client", "changeit".toCharArray, keystore))
+                 } yield ()).value
                }
              } yield {
                keystore -> keystoreTM
-             }).run.attemptRun
+             }).run.unsafeAttemptRun
 
-    x should be (\/-(()))
+    x should be (Right(()))
   }
 }
 

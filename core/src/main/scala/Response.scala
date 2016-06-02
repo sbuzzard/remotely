@@ -17,12 +17,17 @@
 
 package remotely
 
+import cats.{Applicative,Monad}
+import cats.data.Xor
+import cats.implicits._
+
+import fs2.{Async,Strategy,Task}
+import fs2.util.{~>,Free}
+import fs2.interop.cats._
+
 import java.util.UUID
+
 import scala.util.{Success,Failure}
-import scalaz.{Applicative,Catchable,Functor,Monad,Nondeterminism}
-import scalaz.concurrent.Task
-import scalaz.\/
-import scalaz.\/.{left,right}
 
 import Response.Context
 
@@ -36,8 +41,8 @@ sealed trait Response[+A] {
   def map[B](f: A => B): Response[B] =
     Response { ctx => Task.suspend { this(ctx) map f }}
 
-  def attempt: Response[Throwable \/ A] =
-    Response { ctx => Task.suspend { this(ctx).attempt }}
+  def attempt: Response[Xor[Throwable, A]] =
+    Response { ctx => Task.suspend { this(ctx).attempt.map(_.toXor) }}
 
   /** Modify the asynchronous result of this `Response`. */
   def edit[B](f: Task[A] => Task[B]): Response[B] =
@@ -51,38 +56,53 @@ object Response {
     def apply(c: Context): Task[A] = f(c)
   }
 
-  /** Monad instance for `Response`. */
-  implicit val responseInstance = new Monad[Response] with Catchable[Response] with Nondeterminism[Response] {
-    def point[A](a: => A): Response[A] = {
-      lazy val result = a // memoized - `point` should not be used for side effects
-      Response(_ => Task.now(a))
-    }
-    def bind[A,B](a: Response[A])(f: A => Response[B]): Response[B] =
+  /** instance for Monadic `Async` Response`. */
+  implicit def asyncResponseInstance(implicit S: Strategy, AT: Async[Task]): Async[Response] = new Async[Response] {
+    def ref[A]: Response[Async.Ref[Response,A]] = Response { _ => Async.ref[Task, A](AT) map { new ResponseRef(_, this) } }
+    def flatMap[A, B](a: Response[A])(f: A => Response[B]): Response[B] =
       Response { ctx => Task.suspend { a(ctx).flatMap(f andThen (_(ctx))) }}
-    def attempt[A](a: Response[A]): Response[Throwable \/ A] = a.attempt
+    def pure[A](a: A): Response[A] = Response.now(a)
+    override def delay[A](a: => A): Response[A] = Response.delay(a)
+    def suspend[A](fa: => Response[A]) = Response.suspend(fa)
     def fail[A](err: Throwable): Response[A] = Response.fail(err)
+    def attempt[A](a: Response[A]): Response[Either[Throwable, A]] = a.attempt map { _.toEither }
+    override def toString = "Async[Response]"
 
-    def chooseAny[A](head: Response[A], tail: Seq[Response[A]]): Response[(A, Seq[Response[A]])] =
-      Response { ctx => Nondeterminism[Task].chooseAny(head(ctx), tail.map(_(ctx))).map {
-        case (a, rem) => (a, rem.map(Response.async(_))) }
+    class ResponseRef[A](ref: Async.Ref[Task, A], protected val F: Async[Response]) extends Async.Ref[Response, A] {
+      def access: Response[(A, Either[Throwable,A] => Response[Boolean])] = Response { _ =>
+        ref.access.map { case (a,e2r) => (a, e2r andThen { t => Response { _ => t } }) }
+      }
+      def set(a: Response[A]): Response[Unit] = a edit { t => ref.set(t) }
+      def setFree(a: Free[Response, A]): Response[Unit] = Response { ctx =>
+        object translateFunc extends (Response ~> Task) { def apply[R](ra: Response[R]): Task[R] = ra(ctx) }
+        ref.setFree(a.translate(translateFunc))
       }
 
-    override def gatherUnordered[A](rs: Seq[Response[A]]): Response[List[A]] = Response { ctx =>
-      Task.suspend { Nondeterminism[Task].gatherUnordered(rs.map(_(ctx))) }
+      /* TODO: need to be able to call runSet */
+      def runSet(tora: Either[Throwable, A]): Unit = tora.fold(Task.fail, a => ref.set(Task.now(a))).unsafeRunAsync { _ => () }
+
+      override def get: Response[A] = Response { _ => ref.get }
+      def cancellableGet: Response[(Response[A], Response[Unit])] = Response { ctx =>
+        ref.cancellableGet map { case (ra, ru) => (Response { _ => ra }, Response { _ => ru }) }
+      }
     }
+  }
+
+  def par(implicit S: Strategy): Applicative[Response] = new Applicative[Response] {
+    private val AR = implicitly[Async[Response]]
+    def pure[A](a: A): Response[A] = AR.pure(a)
+    def ap[A,B](f: Response[A => B])(a: Response[A]): Response[B] = ap2(f,a)(_(_))
+    def ap2[A,B,C](ra: Response[A], rb: Response[B])(f: (A,B) => C): Response[C] = for {
+      ta <- AR.start(ra)
+      tb <- AR.start(rb)
+      a <- ta
+      b <- tb
+    } yield f(a,b)
   }
 
   /** Gather the results of multiple responses in parallel, preserving the order of the results. */
-  def gather[A](rs: Seq[Response[A]]): Response[List[A]] =
-    Nondeterminism[Response].gather(rs)
-
-  /** An `Applicative[Response]` in which `apply2`, `apply3`, etc compute results in parallel. */
-  val par: Applicative[Response] = new Applicative[Response] {
-    def point[A](a: => A): Response[A] = Response.now(a)
-    def ap[A,B](a: => Response[A])(f: => Response[A => B]): Response[B] = apply2(f,a)(_(_))
-    override def apply2[A,B,C](a: => Response[A], b: => Response[B])(f: (A,B) => C): Response[C] =
-      Nondeterminism[Response].mapBoth(a, b)(f)
-  }
+  def gather[A](rs: Seq[Response[A]])(implicit S: Strategy): Response[List[A]] =
+    implicitly[Async[Response]].parallelTraverse(rs)(identity) map { _.toList }
 
   /** Fail with the given `Throwable`. */
   def fail(err: Throwable): Response[Nothing] = Response { _ => Task.fail(err) }
@@ -97,39 +117,35 @@ object Response {
   def delay[A](a: => A): Response[A] = Response { _ => Task.delay(a) }
 
   /** Produce a `Response` nonstrictly. Do not cache the produced `Response`. */
-  def suspend[A](a: => Response[A]): Response[A] =
-    Response { ctx => Task.suspend { a(ctx) } }
+  def suspend[A](a: => Response[A]): Response[A] = Response { ctx => Task.suspend { a(ctx) } }
 
   /** Obtain the current `Context`. */
-  def ask: Response[Context] = Response { ctx => Task.now(ctx) }
+  def ask: Response[Context] = Response { Task.now }
 
   /** Obtain a portion of the current `Context`. */
   def asks[A](f: Context => A): Response[A] = Response { ctx => Task.delay(f(ctx)) }
 
   /** Apply the given function to the `Context` before passing it to `a`. */
-  def local[A](f: Context => Context)(a: Response[A]): Response[A] =
-    Response { ctx => Task.suspend { a(f(ctx)) }}
+  def local[A](f: Context => Context)(a: Response[A]): Response[A] = Response { ctx => Task.suspend { a(f(ctx)) }}
 
   /** Apply the given effectful function to the `Context` before passing it to `a`. */
-  def localF[A](f: Response[Context])(a: Response[A]): Response[A] =
-    f flatMap { ctx => local(_ => ctx)(a) }
+  def localF[A](f: Response[Context])(a: Response[A]): Response[A] = f flatMap { ctx => local(_ => ctx)(a) }
 
   /** Push a fresh `ID` onto the tracing stack before invoking `a`. */
-  def scope[A](a: Response[A]): Response[A] =
-    localF(fresh.flatMap(id => ask.map(_ push id)))(a)
+  def scope[A](a: Response[A]): Response[A] = localF(fresh.flatMap(id => ask.map(_ push id)))(a)
 
   /**
    * Create a response by registering a completion callback with the given
    * asynchronous function, `register`.
    */
-  def async[A](register: ((Throwable \/ A) => Unit) => Unit): Response[A] =
+  def async[A](register: (Either[Throwable, A] => Unit) => Unit)(implicit S: Strategy): Response[A] =
     Response { _ => Task.async { register }}
 
   /** Create a `Response[A]` from a `Task[A]`. */
   def async[A](a: Task[A]): Response[A] = Response { _ => a }
 
   /** Alias for [[remotely.Response.fromFuture]]. */
-  def async[A](f: scala.concurrent.Future[A])(implicit E: scala.concurrent.ExecutionContext): Response[A] =
+  def async[A](f: scala.concurrent.Future[A])(implicit E: scala.concurrent.ExecutionContext, S: Strategy): Response[A] =
     fromFuture(f)
 
   /**
@@ -137,10 +153,10 @@ object Response {
    * result, it is not safe to reuse this `Response` to repeat the same
    * computation.
    */
-  def fromFuture[A](f: scala.concurrent.Future[A])(implicit E: scala.concurrent.ExecutionContext): Response[A] =
+  def fromFuture[A](f: scala.concurrent.Future[A])(implicit E: scala.concurrent.ExecutionContext, S: Strategy): Response[A] =
     async { cb => f.onComplete {
-      case Success(a) => cb(right(a))
-      case Failure(e) => cb(left(e))
+      case Success(a) => cb(Right(a))
+      case Failure(e) => cb(Left(e))
     }}
 
   /**
@@ -171,8 +187,7 @@ object Response {
    * and/or metadata, and the `ID` stack is useful for tracing.
    * See the [[remotely.Response.scope]] combinator.
    */
-  case class Context(header: Map[String,String],
-                     stack: List[ID]) {
+  case class Context(header: Map[String,String], stack: List[ID]) {
 
     /** Push the given `ID` onto the `stack` of this `Context`. */
     def push(id: ID): Context = copy(stack = id :: stack)
@@ -187,6 +202,6 @@ object Response {
   object Context {
 
     /** The empty `Context`, contains an empty header and tracing stack. */
-    val empty = Context(Map(), List())
+    val empty = Context(Map.empty, List.empty)
   }
 }

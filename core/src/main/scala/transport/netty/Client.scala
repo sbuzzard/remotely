@@ -18,39 +18,31 @@
 package remotely
 package transport.netty
 
+import cats.data.Xor
+
+import fs2.{async,pipe,Strategy,Stream,Task}
+
 import java.net.InetSocketAddress
 import org.apache.commons.pool2.impl.GenericObjectPool
 import io.netty.channel.{Channel,ChannelFuture,ChannelHandlerContext,ChannelFutureListener}
-import scalaz.stream.Cause
-import scalaz.{-\/,\/,\/-}
-import scalaz.stream.{async,Process}
-import scalaz.concurrent.Task
 import scodec.bits.BitVector
 
-class NettyTransport(val pool: GenericObjectPool[Channel]) extends Handler {
+class NettyTransport(val pool: GenericObjectPool[Channel])(implicit S: Strategy) extends Handler {
   import NettyTransport._
-
-  def apply(toServer: Process[Task, BitVector]): Process[Task, BitVector] = {
-    val fromServer = async.unboundedQueue[BitVector](scalaz.concurrent.Strategy.DefaultStrategy)
-    val openConnection = Task.delay{
-      val c = pool.borrowObject()
-      c.pipeline.addLast("clientDeframe", new ClientDeframedHandler(fromServer))
-      c
+  def apply(toServer: Stream[Task, BitVector]): Stream[Task, BitVector] = {
+    case class QueueableChannel(q: async.mutable.Queue[Task, Option[BitVector]], c: Channel)
+    val openQueueableChannel = async.unboundedQueue[Task, Option[BitVector]].async(NettyTransport.clientQueuePool) map { q =>
+      val c = pool.borrowObject
+      c.pipeline.addLast("clientDeframe", new ClientDeframedHandler(q))
+      QueueableChannel(q, c)
     }
-    Process.await(openConnection) { c =>
-      val toFrame = toServer.map(Bits(_)) ++ Process.emit(EOS)
-      val writeBytes: Task[Unit] = toFrame.evalMap(write(c)).run flatMap (_ => Task.delay {
-        val _ = c.flush
-      })
-      val result = Process.await(writeBytes)(_ => fromServer.dequeue).onHalt {
-        case Cause.End =>
-          pool.returnObject(c)
-          Process.Halt(Cause.End)
-        case cause =>
-          pool.invalidateObject(c)
-          Process.Halt(cause)
+    Stream.eval(openQueueableChannel).flatMap { qc =>
+      val toFrame = toServer.map(Bits(_)) ++ Stream.emit(EOS)
+      val writeBytes: Task[Unit] = toFrame.evalMap(write(qc.c)).run flatMap { _ => Task.delay { val _ = qc.c.flush } }
+      Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate)).append(Stream.eval_(Task.delay(pool.returnObject(qc.c)))).onError { t =>
+        pool.invalidateObject(qc.c)
+        Stream.fail(t)
       }
-      result
     }
   }
 
@@ -63,20 +55,20 @@ class NettyTransport(val pool: GenericObjectPool[Channel]) extends Handler {
 
 
 object NettyTransport {
-  def evalCF(cf: ChannelFuture): Task[Unit] = Task.async { cb =>
-    val _ = cf.addListener(new ChannelFutureListener {
-                     def operationComplete(cf: ChannelFuture): Unit =
-                       if(cf.isSuccess) cb(\/-(())) else cb(-\/(cf.cause))
-                   })
+  private val clientQueuePool = Strategy.fromExecutor(fixedNamedThreadPool("client-queue-pool"))
+  def evalCF(cf: ChannelFuture)(implicit S: Strategy): Task[Unit] = Task.unforkedAsync { cb =>
+    cf.addListener(new ChannelFutureListener {
+      def operationComplete(cf: ChannelFuture): Unit = if (cf.isSuccess) cb(Right(())) else cb(Left(cf.cause))
+    })
+    ()
   }
 
-  def write(c: Channel)(frame: Framed): Task[Unit] = evalCF(c.writeAndFlush(frame))
+  def write(c: Channel)(frame: Framed)(implicit S: Strategy): Task[Unit] = evalCF(c.writeAndFlush(frame))
 
   def single(host: InetSocketAddress,
              expectedSigs: Set[Signature] = Set.empty,
              workerThreads: Option[Int] = None,
              monitoring: Monitoring = Monitoring.empty,
-             sslParams: Option[SslParameters] = None): Task[NettyTransport] =
-
-  NettyConnectionPool.default(Process.constant(host), expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
+             sslParams: Option[SslParameters] = None)(implicit S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("netty-transport"))): Task[NettyTransport] =
+    NettyConnectionPool.default(Stream.constant(host), expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
 }

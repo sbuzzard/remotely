@@ -17,18 +17,22 @@
 
 package remotely
 
+import cats.Monad
+import cats.implicits._
+
+import fs2._
+import fs2.interop.cats._
+
 import org.scalacheck._
 import Prop._
-import scalaz.concurrent.Task
 import scala.concurrent.duration._
-import scalaz._
-import scalaz.std.list._
-import \/._
 
 object CircuitBreakerSpec extends Properties("CircuitBreaker") {
 
+  implicit val S: Strategy = Strategy.fromCachedDaemonPool()
+
   def failures(n: Int, cb: CircuitBreaker) =
-    List.fill(n)(cb(Task.fail(new Error("oops"))).attempt).foldLeft(Task.now(right[Throwable, Int](0))) {
+    List.fill(n)(cb(Task.fail(new Error("oops"))).attempt).foldLeft(Task.now(Right[Throwable, Int](0)): Task[Either[Throwable, Int]]) {
       (t1, t2) => t1.flatMap(_ => t2)
     }
 
@@ -37,8 +41,8 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
     val x = b.toInt
     val n = x.abs
     val p = failures(n + 1, CircuitBreaker(3.seconds, n))
-    p.run match {
-      case -\/(e) => e.getMessage == "oops"
+    p.unsafeRun match {
+      case Left(e) => e.getMessage == "oops"
       case _ => false
     }
   }
@@ -51,8 +55,8 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
     val x = b.toInt
     val n = x.abs
     val p = failures(n + 2, CircuitBreaker(3.seconds, n))
-    p.run match {
-      case -\/(CircuitBreakerOpen) => true
+    p.unsafeRun match {
+      case Left(CircuitBreakerOpen) => true
       case _ => false
     }
   }
@@ -65,7 +69,7 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
       // The breaker should have plenty of time to close
       Task(Thread.sleep(2))
     )).map(_ => 0)
-    p.attemptRun.fold(_ => false, _ == 0)
+    p.unsafeAttemptRun.fold(_ => false, _ == 0)
   }
 
   // The CB doesn't open as long as there are successes
@@ -76,7 +80,7 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
       cb(Task.now(0)),
       cb(Task.fail(new Error("oops"))).attempt
     )).map(_ => 1)
-    p.attemptRun.fold(_ => false, _ == 1)
+    p.unsafeAttemptRun.fold(_ => false, _ == 1)
   }
 
 }

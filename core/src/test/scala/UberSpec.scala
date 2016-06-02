@@ -17,10 +17,10 @@
 
 package remotely
 
+import fs2.{Stream,Task}
+
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
-import scalaz.concurrent.Task
-import scalaz.stream.Process
 import remotely.transport.netty.NettyTransport
 import scala.concurrent.duration.DurationInt
 import java.util.concurrent.Executors
@@ -28,30 +28,30 @@ import java.util.concurrent.Executors
 class UberSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
   behavior of "permutations"
   it should "work" in {
-    val input: Process[Task,Int] = Process.emitAll(Vector(1,2,3))
-    val permuted : IndexedSeq[Process[Task,Int]] = Endpoint.permutations(input).runLog.run
+    val input: Stream[Task,Int] = Stream.emits(Vector(1,2,3)).covary[Task]
+    val permuted : IndexedSeq[Stream[Task,Int]] = Endpoint.permutations(input).runLog.unsafeRun
     permuted.size should be (6)
-    val all = permuted.map(_.runLog.run).toSet
+    val all = permuted.map(_.runLog.unsafeRun).toSet
     all should be(Set(IndexedSeq(1,2,3), IndexedSeq(1,3,2), IndexedSeq(2,1,3), IndexedSeq(2,3,1), IndexedSeq(3,1,2), IndexedSeq(3,2,1)))
   }
 
   behavior of "isEmpty"
   it should "work" in  {
-    val empty: Process[Task,Int] = Process.halt
-    Endpoint.isEmpty(empty).run should be (true)
+    val empty: Stream[Task,Int] = Stream.empty.covary[Task]
+    Endpoint.isEmpty(empty).unsafeRun should be (true)
 
-    val notEmpty: Process[Task,Int] = Process.emit(1)
-    Endpoint.isEmpty(notEmpty).run should be (false)
+    val notEmpty: Stream[Task,Int] = Stream.emit(1).covary[Task]
+    Endpoint.isEmpty(notEmpty).unsafeRun should be (false)
 
-    val alsoNot:  Process[Task,Int] = Process.eval(Task.now(1))
-    Endpoint.isEmpty(alsoNot).run should be (false)
+    val alsoNot:  Stream[Task,Int] = Stream.eval(Task.now(1))
+    Endpoint.isEmpty(alsoNot).unsafeRun should be (false)
   }
 
   behavior of "transpose"
   it should "work" in {
     val input = IndexedSeq(IndexedSeq("a", "b", "c"),IndexedSeq("q", "w", "e"), IndexedSeq("1", "2", "3"))
-    val inputStream: Process[Task,Process[Task,String]] = Process.emitAll(input.map(Process.emitAll(_)))
-    val transposed: IndexedSeq[IndexedSeq[String]] = Endpoint.transpose(inputStream).runLog.run.map(_.runLog.run)
+    val inputStream: Stream[Task,Stream[Task,String]] = Stream.emits(input.map(Stream.emits(_).covary[Task])).covary[Task]
+    val transposed: IndexedSeq[IndexedSeq[String]] = Endpoint.transpose(inputStream).runLog.unsafeRun.map(_.runLog.unsafeRun)
     transposed should be (input.transpose)
   }
 
@@ -60,17 +60,17 @@ class UberSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
 
   val server1 = new CountServer
   val server2 = new CountServer
-  val shutdown1 = server1.environment.serve(addr1).run
-  val shutdown2 = server2.environment.serve(addr2).run
+  val shutdown1 = server1.environment.serve(addr1).unsafeRun
+  val shutdown2 = server2.environment.serve(addr2).unsafeRun
 
   override def afterAll() {
-    shutdown1.run
-    shutdown2.run
+    shutdown1.unsafeRun
+    shutdown2.unsafeRun
   }
 
-  val endpoint1 = (NettyTransport.single(addr1) map Endpoint.single).run
-  val endpoint2 = (NettyTransport.single(addr2) map Endpoint.single).run
-  def endpoints: Process[Nothing,Endpoint] = Process.emitAll(List(endpoint1, endpoint2)) ++ endpoints
+  val endpoint1 = (NettyTransport.single(addr1) map Endpoint.single).unsafeRun
+  val endpoint2 = (NettyTransport.single(addr2) map Endpoint.single).unsafeRun
+  def endpoints: Stream[Nothing,Endpoint] = Stream.emits(List(endpoint1, endpoint2)) ++ endpoints
   val endpointUber = Endpoint.uber(1 second, 10 seconds, 10, endpoints)
 
   behavior of "uber"
@@ -80,8 +80,8 @@ class UberSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
     import codecs._
     val call = evaluate(endpointUber, Monitoring.empty)(CountClient.ping(1))
 
-    val i: Int = call.apply(Context.empty).run
-    val j: Int = call.apply(Context.empty).run
+    val i: Int = call.apply(Context.empty).unsafeRun
+    val j: Int = call.apply(Context.empty).unsafeRun
     j should be (2)
   }
 }

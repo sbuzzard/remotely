@@ -18,6 +18,8 @@
 package remotely
 package transport.netty
 
+import fs2.{async,Strategy,Task}
+
 import java.net.InetSocketAddress
 import java.io.File
 import io.netty.buffer.{ByteBuf,Unpooled}
@@ -30,9 +32,6 @@ import io.netty.handler.codec.ByteToMessageDecoder
 import javax.net.ssl.{TrustManagerFactory,CertPathTrustManagerParameters}
 import java.security.KeyStore
 import java.io.FileInputStream
-import scalaz.{-\/,\/,\/-,Monoid}
-import scalaz.concurrent.Task
-import scalaz.stream.{Process,async}
 import scodec.Err
 import scodec.bits.BitVector
 
@@ -141,46 +140,39 @@ class Deframe extends ByteToMessageDecoder {
   }
 }
 
-class ClientDeframedHandler(queue: async.mutable.Queue[BitVector]) extends SimpleChannelInboundHandler[Framed] {
+class ClientDeframedHandler(queue: async.mutable.Queue[Task, Option[BitVector]])(implicit S: Strategy) extends SimpleChannelInboundHandler[Framed] {
   // there has been an error
-  private def fail(message: String, ctx: ChannelHandlerContext): Unit = {
-    queue.fail(new Throwable(message)).runAsync(Function.const(()))
-    val _ = ctx.channel.close() // should this be disconnect? is there a difference
-  }
-
-  // we've seen the end of the input, close the queue writing to the input stream
-  private def close(): Unit = {
-    queue.close.runAsync(Function.const(()))
+  private def fail(message: String, ctx: ChannelHandlerContext): Task[Unit] = {
+    queue.enqueue1(Option.empty[BitVector]) map { _ =>
+      val _ = ctx.channel.close()
+    }
   }
 
   override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
     ee.printStackTrace()
-    fail(ee.getMessage, ctx)
+    fail(ee.getMessage, ctx).unsafeRun
   }
 
-  override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit =
-    f match {
-      case Bits(bv) =>
-        queue.enqueueOne(bv).runAsync(Function.const(()))
-      case EOS =>
-        close()
-    }
+  override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit = (f match {
+    case Bits(bv) =>
+      queue.enqueue1(Some(bv))
+    case EOS =>
+      queue.enqueue1(Option.empty[BitVector])
+  }).unsafeRun
 }
 
 /**
   * output handler which gets a stream of BitVectors and enframes them
   */
-
 @ChannelHandler.Sharable
 object Enframe extends ChannelOutboundHandlerAdapter {
-  override def write(ctx: ChannelHandlerContext, obj: Object, cp: ChannelPromise): Unit = {
-    obj match {
-      case Bits(bv) =>
-        val byv = bv.toByteVector
-        val _ = ctx.writeAndFlush(Unpooled.wrappedBuffer((codecs.int32.encode(byv.size.toInt).require ++ bv).toByteBuffer), cp)
-      case EOS =>
-        val _ = ctx.writeAndFlush(Unpooled.wrappedBuffer(codecs.int32.encode(0).require.toByteBuffer), cp)
-      case x => throw new IllegalArgumentException("was expecting Framed, got: " + x)
-    }
+  override def write(ctx: ChannelHandlerContext, obj: Object, cp: ChannelPromise): Unit = obj match {
+    case Bits(bv) =>
+      val byv = bv.toByteVector
+      val _ = ctx.writeAndFlush(Unpooled.wrappedBuffer((codecs.int32.encode(byv.size.toInt).require ++ bv).toByteBuffer), cp)
+    case EOS =>
+      val _ = ctx.writeAndFlush(Unpooled.wrappedBuffer(codecs.int32.encode(0).require.toByteBuffer), cp)
+    case x =>
+      throw new IllegalArgumentException("was expecting Framed, got: " + x)
   }
 }

@@ -17,17 +17,18 @@
 
 
 package object remotely {
-  import java.util.concurrent.{ Executors, ExecutorService, ThreadFactory }
+  import cats.Monad
+  import cats.data.Xor
+  import cats.implicits._
+  import fs2._
+  import fs2.interop.cats._
+  import fs2.util.{Catchable,Functor => Fs2Functor}
+  import java.util.concurrent.{Executors,ExecutorService,ThreadFactory}
   import java.util.concurrent.atomic.AtomicInteger
   import scala.concurrent.duration._
   import scala.reflect.runtime.universe.TypeTag
-  import scalaz.stream.Process
-  import scalaz.concurrent.Task
-  import scalaz.\/.{left,right}
-  import scalaz.Monoid
+  import scodec.{Attempt,Err}
   import scodec.bits.{BitVector,ByteVector}
-  import scodec.interop.scalaz._
-//  import scodec.Decoder
   import utils._
 
 /**
@@ -40,7 +41,7 @@ package object remotely {
   * client/server interactions, where the server awaits a response
   * to a particular packet sent before continuing.
   */
-  type Handler = Process[Task,BitVector] => Process[Task,BitVector]
+  type Handler = Stream[Task,BitVector] => Stream[Task,BitVector]
 
   /**
    * Evaluate the given remote expression at the
@@ -56,10 +57,11 @@ package object remotely {
     val refs = Remote.refs(r)
 
     def reportErrors[R](startNanos: Long)(t: Task[R]): Task[R] =
-      t.onFinish {
-        case Some(e) => Task.delay {
-          M.handled(ctx, r, refs, left(e), Duration.fromNanos(System.nanoTime - startNanos))
-        }
+      t.bestEffortOnFinish {
+        case Some(e) =>
+          Task.delay {
+            M.handled(ctx, r, refs, Xor.left(e), Duration.fromNanos(System.nanoTime - startNanos))
+          }
         case None => Task.now(())
       }
 
@@ -68,23 +70,21 @@ package object remotely {
         conn <- e.get
         reqBits <- codecs.encodeRequest(r, ctx).toTask
         respBytes <- reportErrors(start) {
-          val reqBytestream = Process.emit(reqBits)
+          val reqBytestream = Stream.emit(reqBits)
           val bytes = fullyRead(conn(reqBytestream))
           bytes
         }
-        resp <- {
-          reportErrors(start) { codecs.responseDecoder[A].complete.decode(respBytes).map(_.value).toTask }
-        }
+        resp <- reportErrors(start) { codecs.responseDecoder[A].complete.decode(respBytes).map(_.value).toTask }
         result <- resp.fold(
           { e =>
             val ex = ServerException(e)
             val delta = System.nanoTime - start
-            M.handled(ctx, r, Remote.refs(r), left(ex), Duration.fromNanos(delta))
+            M.handled(ctx, r, Remote.refs(r), Xor.left(ex), Duration.fromNanos(delta))
             Task.fail(ex)
           },
           { a =>
             val delta = System.nanoTime - start
-            M.handled(ctx, r, refs, right(a), Duration.fromNanos(delta))
+            M.handled(ctx, r, refs, Xor.right(a), Duration.fromNanos(delta))
             Task.now(a)
           }
         )
@@ -92,10 +92,22 @@ package object remotely {
     }
   }}
 
-  private[remotely] def fullyRead(s: Process[Task,BitVector]): Task[BitVector] = s.runFoldMap(x => x)
+  implicit class RemotelyEnrichedAttempt[A](val self: Attempt[A]) extends AnyVal {
+    def toTask: Task[A] = toTask(err => new IllegalArgumentException(err.messageWithContext))
+    def toTask(f: Err => Throwable): Task[A] = self.fold(e => Task.fail(f(e)), Task.now)
+    def toXor: Err Xor A = self.fold(Xor.left, Xor.right)
+  }
+
+  def once[F[_], A](s: Stream[F, A]): Stream[F, A] = s.through(pipe.covary[F, A, A](echo1)).through(pipe.take(1))
+  def runLast[F[_]: Fs2Functor: Catchable, A](s: Stream[F, A]): F[Option[A]] = s.runLog.map(_.lastOption)
+  def runOnceLast[F[_]: Fs2Functor: Catchable, A](s: Stream[F, A]): F[Option[A]] = runLast(once(s))
+  def iterate[A](start: A)(f: A => A): Stream[Pure, A] = Stream.emit(start) ++ iterate(f(start))(f)
+  def echo1[A]: Pipe[Pure, A, A] = _.pull(Pull.echo1)
+
+  private[remotely] def fullyRead(s: Stream[Task,BitVector]): Task[BitVector] = s.runFold(BitVector.empty)((a, b) => a ++ b)
 
   private[remotely] def fixedNamedThreadPool(name: String): ExecutorService =
-    Executors.newFixedThreadPool(Runtime.getRuntime.availableProcessors, namedThreadFactory(name))
+    Executors.newFixedThreadPool(Runtime.getRuntime.availableProcessors.max(4), namedThreadFactory(name))
 
   private[remotely] def namedThreadFactory(name: String): ThreadFactory = new ThreadFactory {
     val num = new AtomicInteger(1)
@@ -103,6 +115,12 @@ package object remotely {
       val t = new Thread(runnable, s"$name - ${num.getAndIncrement}")
       t.setDaemon(true)
       t
+    }
+  }
+
+  private[remotely] implicit class EnrichedTaskForRemotely[A](val self: Task[A]) extends AnyVal {
+    def bestEffortOnFinish(f: Option[Throwable] => Task[Unit]): Task[A] = self.attempt flatMap { r =>
+      f(r.left.toOption).attempt flatMap { _ => r.fold(Task.fail, Task.now) }
     }
   }
 }

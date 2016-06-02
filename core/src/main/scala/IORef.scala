@@ -17,9 +17,9 @@
 
 package remotely
 
-import java.util.concurrent.atomic.AtomicReference
+import fs2.Task
 
-import scalaz.concurrent.Task
+import java.util.concurrent.atomic.AtomicReference
 
 /** An atomically updatable reference, guarded by the `Task` monad. */
 sealed abstract class IORef[A] {
@@ -46,5 +46,3 @@ object IORef {
     } yield r
   }
 }
-
-

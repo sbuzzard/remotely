@@ -18,6 +18,10 @@
 package remotely
 package transport.netty
 
+import cats.data.Xor
+
+import fs2.{Strategy,Stream,Task}
+
 import java.net.InetSocketAddress
 import java.util.concurrent.{Executors, ThreadFactory}
 import io.netty.util.concurrent.{Future, GenericFutureListener}
@@ -34,20 +38,16 @@ import io.netty.handler.codec.{Delimiters,DelimiterBasedFrameDecoder}
 import io.netty.handler.ssl.SslContext
 import remotely.utils._
 import remotely.Response.Context
-import scalaz.concurrent.Task
-import scalaz.stream.Process
-import scalaz.{-\/,\/,\/-}
 import scodec.{Attempt, Err}
 import scodec.bits.BitVector
-import scodec.interop.scalaz._
 import io.netty.buffer.ByteBuf
 
 object NettyConnectionPool {
-  def default(hosts: Process[Task,InetSocketAddress],
+  def default(hosts: Stream[Task,InetSocketAddress],
               expectedSigs: Set[Signature] = Set.empty,
               workerThreads: Option[Int] = None,
               monitoring: Monitoring = Monitoring.empty,
-              sslParams: Option[SslParameters]): Task[GenericObjectPool[Channel]] = {
+              sslParams: Option[SslParameters])(implicit S: Strategy): Task[GenericObjectPool[Channel]] = {
     SslParameters.toClientContext(sslParams) map { ssl =>
       new GenericObjectPool[Channel](new NettyConnectionPool(hosts, expectedSigs, workerThreads, monitoring, ssl))
     }
@@ -56,14 +56,13 @@ object NettyConnectionPool {
 
 case class IncompatibleServer(msg: String) extends Throwable(msg)
 
-class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
+class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
                           expectedSigs: Set[Signature],
                           workerThreads: Option[Int],
                           M: Monitoring,
-                          sslContext: Option[SslContext]) extends BasePooledObjectFactory[Channel] {
+                          sslContext: Option[SslContext])(implicit S: Strategy) extends BasePooledObjectFactory[Channel] {
 
   val numWorkerThreads = workerThreads getOrElse Runtime.getRuntime.availableProcessors.max(4)
-
   val workerThreadPool = new NioEventLoopGroup(numWorkerThreads, namedThreadFactory("nettyWorker"))
 
   val validateCapabilities: ((Capabilities,Channel)) => Task[Channel] = {
@@ -73,7 +72,7 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
       val missing = Capabilities.required -- capabilties.capabilities
 
       if(missing.isEmpty) {
-        Task {
+        Task.delay {
           pipe.removeLast()
           pipe.addLast("enframe", Enframe)
           pipe.addLast("deframe", new Deframe)
@@ -86,18 +85,18 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
           s"server missing required capabilities: $missing"
         )
 
-        Task.async[Channel] { cb =>
+        Task.unforkedAsync[Channel] { cb =>
 
           pipe.removeLast()
 
           val _ = channel.close().addListener(
             new ChannelFutureListener {
               def operationComplete(cf: ChannelFuture) =
-                if(cf.isSuccess) cb(\/-(cf.channel)) else cb(-\/(cf.cause))
+                if(cf.isSuccess) cb(Right(cf.channel)) else cb(Left(cf.cause))
             }
           )
 
-        } flatMap(_ => Task.fail(error))
+        } flatMap { _ => Task.fail(error) }
       }
   }
 
@@ -116,16 +115,15 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
     */
   class ClientNegotiateDescription(channel: Channel,
                                    expectedSigs: Set[Signature],
-                                   addr: InetSocketAddress)
-      extends SimpleChannelInboundHandler[Framed] {
+                                   addr: InetSocketAddress) extends SimpleChannelInboundHandler[Framed] {
 
     M.negotiating(Some(addr), "description negotiation begin", None)
 
 
     // the callback which will fulfil the valid task
-    @volatile private[this] var cb: Throwable\/Channel => Unit = Function.const(())
+    @volatile private[this] var cb: Either[Throwable, Channel] => Unit = Function.const(())
 
-    val valid: Task[Channel] = Task.async { cb =>
+    val valid: Task[Channel] = Task.unforkedAsync[Channel] { cb =>
       this.cb = cb
     }
 
@@ -142,7 +140,7 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
       val pipe = channel.pipeline()
       pipe.removeLast()
       M.negotiating(Some(addr), "description", Some(err))
-      cb(\/.left(err))
+      cb(Left(err))
     }
 
     override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
@@ -156,7 +154,7 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
       val pipe = channel.pipeline()
       pipe.removeLast()
       M.negotiating(Some(addr), "description", None)
-      cb(\/.right(channel))
+      cb(Right(channel))
     }
 
     override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit = {
@@ -203,11 +201,11 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
     } yield ()
 
     // actually make the request for the description
-    requestDescription.runAsync {
-      case \/-(bits) => ()
-      case -\/(x) => fail("error requesting server description: " + x)
+    requestDescription.unsafeRunAsync {
+      case Right(bits) => ()
+      case Left(x) => fail("error requesting server description: " + x)
     }
-}
+  }
 
   /**
     * pipeline handler which expects the Capabilities string which the
@@ -219,16 +217,15 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
   class ClientNegotiateCapabilities extends DelimiterBasedFrameDecoder(1000,Delimiters.lineDelimiter():_*) {
 
     // callback which fulfills the capabilities Task
-    @volatile private[this] var cb: Throwable\/(Capabilities,Channel) => Unit = Function.const(())
+    @volatile private[this] var cb: Either[Throwable, (Capabilities,Channel)] => Unit = Function.const(())
 
-
-    val capabilities: Task[(Capabilities,Channel)] = Task.async { cb =>
+    val capabilities: Task[(Capabilities,Channel)] = Task.unforkedAsync[(Capabilities, Channel)] { cb =>
       this.cb = cb
     }
 
     override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
       ee.printStackTrace()
-      cb(\/.left(ee))
+      cb(Left(ee))
     }
 
     override def decode(ctx: ChannelHandlerContext, buffer: ByteBuf): Object = {
@@ -236,31 +233,30 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
       buffer.readBytes(bytes)
       val str = new String(bytes, "UTF-8")
       M.negotiating(None, s"received capabilities string: $str", None)
-      val r = Capabilities.parseHelloString(str).toDisjunction.bimap(
+      val r = Capabilities.parseHelloString(str).toXor.bimap(
         (e: Err) => new IllegalArgumentException(e.message),
         (cap: Capabilities) => (cap,ctx.channel)
       )
-      cb(r)
+      cb(r.toEither)
       r
     }
   }
 
   def createTask(expectedSigs: Set[Signature]): Task[Channel] = {
-    val negotiateCapable = new ClientNegotiateCapabilities
+    val negotiateCapable = new ClientNegotiateCapabilities()
     for {
-      addrMaybe <- hosts.once.runLast
+      addrMaybe <- runOnceLast(hosts)
       addr <- addrMaybe.fold[Task[InetSocketAddress]](Task.fail(new Exception("out of connections")))(Task.now(_))
       _ = M.negotiating(Some(addr), "address selected", None)
       fut <- {
-
         Task.delay {
 
           // assign this to a val so we can throw it away later, wreckx-n-effect
           val bootstrap = new Bootstrap()
 
-          val s = bootstrap.option[java.lang.Boolean](ChannelOption.SO_KEEPALIVE, true)
-          val i = bootstrap.group(workerThreadPool)
-          val d = bootstrap.channel(classOf[NioSocketChannel])
+          val o = bootstrap.option[java.lang.Boolean](ChannelOption.SO_KEEPALIVE, true)
+          val g = bootstrap.group(workerThreadPool)
+          val c = bootstrap.channel(classOf[NioSocketChannel])
 
           val init = new ChannelInitializer[SocketChannel] {
 
@@ -277,7 +273,8 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
                 sh.handshakeFuture().addListener(new GenericFutureListener[Future[Channel]] {
                   def operationComplete(future: Future[Channel]): Unit = {
                     // avoid negotiation when ssl fails
-                    if(!future.isSuccess) { pipe.remove(negotiateCapable) }
+                    if(!future.isSuccess) pipe.remove(negotiateCapable)
+                    ()
                   }
                 })
 
@@ -288,19 +285,17 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
             }
           }
 
-
-          val e = bootstrap.handler(init)
-
+          val h = bootstrap.handler(init)
           bootstrap.connect(addr)
       }}
       chan <- {
-        Task.async[Channel] { cb =>
+        Task.unforkedAsync[Channel] { cb =>
           val _ = fut.addListener(new ChannelFutureListener {
                             def operationComplete(cf: ChannelFuture): Unit = {
                               if(cf.isSuccess) {
-                                cb(\/-(cf.channel))
+                                cb(Right(cf.channel))
                               } else {
-                                cb(-\/(cf.cause))
+                                cb(Left(cf.cause))
                               }
                             }
                           })
@@ -313,10 +308,10 @@ class NettyConnectionPool(hosts: Process[Task,InetSocketAddress],
       _ = M.negotiating(Some(addr), "capabilities valid", None)
       c2 <- if(expectedSigs.isEmpty) Task.now(c1) else new ClientNegotiateDescription(c1,expectedSigs, addr).valid
       _ = M.negotiating(Some(addr), "description valid", None)
-    } yield(c2)
+    } yield c2
   }
 
-  override def create: Channel = createTask(expectedSigs).run
+  override def create: Channel = createTask(expectedSigs).async(S).unsafeRun
 
   override def wrap(c: Channel): PooledObject[Channel] = new DefaultPooledObject(c)
 

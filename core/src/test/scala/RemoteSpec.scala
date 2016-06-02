@@ -17,11 +17,11 @@
 
 package remotely
 
+import fs2.Task
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import org.scalacheck._
 import Prop._
-import scalaz.concurrent.Task
 import transport.netty._
 
 object RemoteSpec extends Properties("Remote") {
@@ -41,14 +41,14 @@ object RemoteSpec extends Properties("Remote") {
                                                         Signature("sum", List(Field("xs", "List[Int]")), "Int"),
                                                         Signature("add1", List(Field("xs", "List[Int]")), "List[Int]"),
                                                         Signature("describe", Nil, "List[Signature]"))))
-                                                                  
+
       .declare("sum", (d: List[Double]) => Response.now(d.sum))
       .declare("add1", (d: List[Int]) => Response.now(d.map(_ + 1):List[Int]))
     }
 
   val addr = new InetSocketAddress("localhost", 8082)
-  val server = env.serve(addr).run
-  val nettyTrans = NettyTransport.single(addr).run
+  val server = env.serve(addr).unsafeRun
+  val nettyTrans = NettyTransport.single(addr).unsafeRun
   val loc: Endpoint = Endpoint.single(nettyTrans)
 
   val sum = Remote.ref[List[Int] => Int]("sum")
@@ -60,17 +60,17 @@ object RemoteSpec extends Properties("Remote") {
 
   property("roundtrip") =
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.sum == sum(l).runWithoutContext(loc).run//(loc, ctx ++ kvs).run
+      l.sum == sum(l).runWithoutContext(loc).unsafeRun
     }
 
   property("roundtrip[Double]") =
     forAll { (l: List[Double], kvs: Map[String,String]) =>
-      l.sum == sumD(l).runWithContext(loc, ctx ++ kvs).run
+      l.sum == sumD(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
 
   property("roundtrip[List[Int]]") =
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.map(_ + 1) == mapI(l).runWithContext(loc, ctx ++ kvs).run
+      l.map(_ + 1) == mapI(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
 
   property("check-serializers") = secure {
@@ -78,7 +78,7 @@ object RemoteSpec extends Properties("Remote") {
     // decoder(s) the server does not know about
     val wrongsum = Remote.ref[List[Float] => Float]("sum")
     val t: Task[Float] = wrongsum(List(1.0f, 2.0f, 3.0f)).runWithContext(loc, ctx)
-    t.attemptRun.fold(
+    t.unsafeAttemptRun.fold(
       e => {
         println("test resulted in error, as expected:")
         println(prettyError(e.toString))
@@ -93,7 +93,7 @@ object RemoteSpec extends Properties("Remote") {
     // for a remote ref that is unknown
     val wrongsum = Remote.ref[List[Int] => Int]("product")
     val t: Task[Int] = wrongsum(List(1, 2, 3)).runWithContext(loc, ctx)
-    t.attemptRun.fold(
+    t.unsafeAttemptRun.fold(
       e => {
         println("test resulted in error, as expected:")
         println(prettyError(e.toString))
@@ -105,7 +105,7 @@ object RemoteSpec extends Properties("Remote") {
 
   property("add3") =
     forAll { (one: Int, two: Int, three: Int) =>
-      add3(one, two, three).runWithoutContext(loc).run == (one + two + three)
+      add3(one, two, three).runWithoutContext(loc).unsafeRun == (one + two + three)
     }
 /* These take forever on travis, and so I'm disabling them, we should leave benchmarking of scodec to scodec and handle benchmarking of remotely in the benchmarking sub-projects
 
@@ -138,7 +138,7 @@ object RemoteSpec extends Properties("Remote") {
     val l: List[Int] = List(1)
     val N = 5000
     val t = time {
-      (0 until N).foreach { _ => sum(l).runWithContext(loc, ctx).run; () }
+      (0 until N).foreach { _ => sum(l).runWithContext(loc, ctx).unsafeRun; () }
     }
     println { "round trip took average of: " + (t/N.toDouble) + " milliseconds" }
     true
@@ -147,7 +147,7 @@ object RemoteSpec extends Properties("Remote") {
 
   // NB: this property should always appear last, so it runs after all properties have run
   property("cleanup") = lazily {
-    server.run
+    server.unsafeRun
     nettyTrans.pool.close()
     true
   }

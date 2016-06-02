@@ -17,19 +17,20 @@
 
 package remotely
 
+import cats.Monad
+import cats.data.Xor
+import cats.implicits._
+
+import fs2.Task
+
 import remotely.Response.Context
 
 import scala.collection.immutable.{IndexedSeq,Set,SortedMap,SortedSet}
 import scala.math.Ordering
 import scala.reflect.runtime.universe.TypeTag
-import scalaz.{\/,-\/,\/-,Monad}
-import scalaz.\/._
-import scalaz.concurrent.Task
-import scalaz.syntax.std.option._
 import shapeless.Lazy
 import scodec.{codecs => C, _}
 import scodec.bits.BitVector
-import scodec.interop.scalaz._
 import Remote._
 
 private[remotely] trait lowerprioritycodecs {
@@ -52,17 +53,21 @@ package object codecs extends lowerprioritycodecs {
   implicit val utf8 = C.variableSizeBytes(int32, C.utf8)
   implicit val bool = C.bool(8) // use a full byte
 
+  implicit val scodecDecoderMonadInstance: Monad[Decoder] = new Monad[Decoder] {
+    def pure[A](a: A) = Decoder.point(a)
+    def flatMap[A, B](fa: Decoder[A])(f: A => Decoder[B]) = fa flatMap f
+  }
+
   implicit def tuple2[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Lazy[Codec[(A,B)]] =
     LCA.value ~ LCB.value
 
-  implicit def either[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[A \/ B] =
-    C.discriminated[A \/ B].by(bool)
-    .| (false) { case -\/(l) => l } (\/.left) (Codec[A])
-    .| (true)  { case \/-(r) => r } (\/.right) (Codec[B])
+  implicit def either[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[Xor[A, B]] =
+    C.discriminated[Xor[A, B]].by(bool)
+    .| (false) { case Xor.Left(l) => l } (Xor.left) (Codec[A])
+    .| (true)  { case Xor.Right(r) => r } (Xor.right) (Codec[B])
 
   implicit def stdEither[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[Either[A,B]] =
     C.either(bool, Codec[A], Codec[B])
-
 
   implicit def byteArray: Codec[Array[Byte]] = {
     val B = new Codec[Array[Byte]] {
@@ -90,7 +95,7 @@ package object codecs extends lowerprioritycodecs {
   def optional[A](target: Codec[A]): Codec[Option[A]] = option(Lazy(target))
 
   implicit def option[A](implicit LCA: Lazy[Codec[A]]): Codec[Option[A]] =
-    either(empty, LCA.value).xmap[Option[A]](_.toOption, _.toRightDisjunction(()))
+    either(empty, LCA.value).xmap[Option[A]](_.toOption, _.toRightXor(()))
 
   implicit def list[A](implicit LCA: Lazy[Codec[A]]): Codec[List[A]] =
     indexedSeq[A].xmap[List[A]](
@@ -143,9 +148,9 @@ package object codecs extends lowerprioritycodecs {
         remoteEncode(f) <+> remoteEncode(a) <+> remoteEncode(b) <+> remoteEncode(c)
       case Ap4(f,a,b,c,d) => C.uint8.encode(5) <+>
         remoteEncode(f) <+> remoteEncode(a) <+> remoteEncode(b) <+> remoteEncode(c) <+> remoteEncode(d)
+      case Ap5(f,a,b,c,d,e) => C.uint8.encode(6) <+>
+        remoteEncode(f) <+> remoteEncode(a) <+> remoteEncode(b) <+> remoteEncode(c) <+> remoteEncode(d) <+> remoteEncode(e)
     }
-
-  private val E = Monad[Decoder]
 
   def localRemoteEncoder[A] = new Encoder[Local[A]] {
     def encode(a: Local[A]): Attempt[BitVector] =
@@ -170,17 +175,22 @@ package object codecs extends lowerprioritycodecs {
   def remoteDecoder(env: Codecs[_]): Decoder[Remote[Any]] = {
     def go = remoteDecoder(env)
     C.uint8.flatMap {
-      case 0 => localRemoteDecoder(env)
-      case 1 => refCodec
-      case 2 => E.apply2(go,go)((f,a) =>
-                  Ap1(f.asInstanceOf[Remote[Any => Any]],a))
-      case 3 => E.apply3(go,go,go)((f,a,b) =>
-                  Ap2(f.asInstanceOf[Remote[(Any,Any) => Any]],a,b))
-      case 4 => E.apply4(go,go,go,go)((f,a,b,c) =>
-                  Ap3(f.asInstanceOf[Remote[(Any,Any,Any) => Any]],a,b,c))
-      case 5 => E.apply5(go,go,go,go,go)((f,a,b,c,d) =>
-                  Ap4(f.asInstanceOf[Remote[(Any,Any,Any,Any) => Any]],a,b,c,d))
-      case t => fail(Err(s"[decoding] unknown tag byte: $t"))
+      case 0 =>
+        localRemoteDecoder(env)
+      case 1 =>
+        refCodec
+      case 2 =>
+        (go |@| go) map { (f,a) => Ap1(f.asInstanceOf[Remote[Any => Any]],a) }
+      case 3 =>
+        (go |@| go |@| go) map { (f,a,b) => Ap2(f.asInstanceOf[Remote[(Any, Any) => Any]],a,b) }
+      case 4 =>
+        (go |@| go |@| go |@| go) map { (f,a,b,c) => Ap3(f.asInstanceOf[Remote[(Any, Any, Any) => Any]],a,b,c) }
+      case 5 =>
+        (go |@| go |@| go |@| go |@| go) map { (f,a,b,c,d) => Ap4(f.asInstanceOf[Remote[(Any, Any, Any, Any) => Any]],a,b,c,d) }
+      case 6 =>
+        (go |@| go |@| go |@| go |@| go |@| go) map { (f,a,b,c,d,e) => Ap5(f.asInstanceOf[Remote[(Any, Any, Any, Any, Any) => Any]],a,b,c,d,e) }
+      case t =>
+        fail(Err(s"[decoding] unknown tag byte: $t"))
     }
   }
 
@@ -225,9 +235,9 @@ package object codecs extends lowerprioritycodecs {
       }
     } yield (responseEncoder, ctx, r)
 
-  def responseDecoder[A](implicit LDA: Lazy[Decoder[A]]): Decoder[String \/ A] = bool flatMap {
-    case false => utf8.map(left)
-    case true => Decoder[A].map(right)
+  def responseDecoder[A](implicit LDA: Lazy[Decoder[A]]): Decoder[Xor[String, A]] = bool flatMap {
+    case false => utf8.map(Xor.left)
+    case true => Decoder[A].map(Xor.right)
   }
 
   def responseEncoder[A](implicit LEA: Lazy[Encoder[A]]) = new Encoder[Attempt[A]] {

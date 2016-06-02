@@ -18,7 +18,6 @@
 package remotely
 
 import scala.reflect.runtime.universe.TypeTag
-import scalaz.Monad
 
 trait Value {
   def apply(args: Any*): Response[Any]

@@ -19,14 +19,15 @@ package remotely
 package example.benchmark
 package client
 
+import cats.Monoid
+
+import cats.implicits._
+
 import example.benchmark.{SmallW, BigW, MediumW, LargeW}
-import scalaz.concurrent.Task
-import scalaz.Monoid
-import scalaz.syntax.validation._
-import scalaz.syntax.monoid._
-import scalaz.syntax.traverse._
-import scalaz.std.anyVal._
-import scalaz.std.map._
+
+import fs2.Task
+import fs2.interop.cats._
+
 import remotely._
 import remotely.Remote._
 import remotely.Remote.implicits._
@@ -52,8 +53,8 @@ case class Result(success: Int,
 
 object Result {
   implicit val resultMonoid: Monoid[Result] = new Monoid[Result] {
-    def zero: Result = Result(0,0,0,Long.MaxValue,0,0,Map.empty)
-    def append(x: Result, y: => Result) =
+    def empty: Result = Result(0,0,0,Long.MaxValue,0,0,Map.empty)
+    def combine(x: Result, y: Result) =
       Result(x.success |+| y.success,
              x.failure |+| y.failure,
              x.successTime |+| y.successTime,
@@ -83,14 +84,14 @@ class Test(results: Results, task: Task[_]) extends Runnable {
   def run(): Unit = {
     while(!dead) {
       val start = System.nanoTime
-      task.runAsync(_.fold(error(start), success(start)))
+      task.unsafeRunAsync(_.fold(error(start), success(start)))
     }
   }
 }
 
 
 class Results {
-  var results = Monoid[Result].zero
+  var results = Monoid[Result].empty
 
   def success(t: Long): Unit = {
     synchronized {
@@ -148,7 +149,7 @@ object BenchmarkClientMain extends TestData with transformations {
 
     val port = Integer.parseInt(argv(0))
     val addr = new java.net.InetSocketAddress("localhost", port)
-    val nettyTrans = NettyTransport.single(addr, server.BenchmarkClient.expectedSignatures, monitoring = Monitoring.consoleLogger("benchmarkClient")).run
+    val nettyTrans = NettyTransport.single(addr, server.BenchmarkClient.expectedSignatures, monitoring = Monitoring.consoleLogger("benchmarkClient")).unsafeRun
     val endpoint = Endpoint.single(nettyTrans)
     val num = Integer.parseInt(argv(1))
     val duration = java.lang.Long.parseLong(argv(2))
@@ -173,7 +174,7 @@ object BenchmarkClientMain extends TestData with transformations {
     threads.foreach(_.join)
 
     results.print()
-    nettyTrans.shutdown.run
+    nettyTrans.shutdown.unsafeRun
   }
 }
 

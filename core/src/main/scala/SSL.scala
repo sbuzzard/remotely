@@ -16,21 +16,25 @@
 //: ----------------------------------------------------------------------------
 package remotely
 
-import java.io.{ByteArrayInputStream,InputStream,File, FileInputStream}
-import java.security.{KeyFactory,KeyStore,PrivateKey, SecureRandom}
+import cats.Monoid
+import cats.implicits._
+
+import fs2.{ io => fs2io, _ }
+import fs2.interop.cats._
+import fs2.util._
+
+import java.io.{ByteArrayInputStream,File}
+import java.nio.file.{Path,Paths}
+import java.security.{KeyFactory,KeyStore,PrivateKey,SecureRandom}
 import java.security.spec.{PKCS8EncodedKeySpec}
 import java.security.cert.{Certificate,CertificateFactory,PKIXBuilderParameters,X509Certificate,X509CertSelector,TrustAnchor}
 import javax.net.ssl._
+
 import io.netty.handler.ssl._
-import scalaz.stream._
-import scalaz.std.string._
-import scalaz.concurrent.Task
-import scalaz.{Kleisli,Monoid}
+
+import scala.collection.JavaConverters._
+
 import scodec.bits.ByteVector
-import scalaz.syntax.traverse._
-import scalaz.std.option._
-import Process._
-import collection.JavaConverters._
 
 // what are all the configurations we want to support:
 //
@@ -48,56 +52,59 @@ object SSL {
     keystore
   }
 
-  def addPEM(in: InputStream, name: String)(ks: KeyStore): Task[KeyStore] = addCerts(ks, name, certFromPEM(in))
+  def addPEM(path: Path, name: String)(ks: KeyStore): Task[KeyStore] = addCerts(ks, name, certFromPEM(path))
 
   implicit val taskUnitMonoid: Monoid[Task[Unit]] = new Monoid[Task[Unit]] {
-    def zero = Task.now(())
-    def append(a: Task[Unit], b: => Task[Unit]) = a flatMap { _ => b }
+    def empty = Task.now(())
+    def combine(a: Task[Unit], b: Task[Unit]) = a flatMap { _ => b }
   }
 
   private[remotely] def addCert(cert: Certificate, name: String, ks: KeyStore): Task[Unit] = Task.delay(ks.setCertificateEntry(name, cert))
-  private[remotely] def addKey(key: PrivateKey, certs: Seq[Certificate], name: String, pass: Array[Char], ks: KeyStore):Task[Unit] = Task.delay(ks.setKeyEntry(name, key, pass, certs.toArray[Certificate]))
+  private[remotely] def addKey(key: PrivateKey, certs: Seq[Certificate], name: String, pass: Array[Char], ks: KeyStore):Task[Unit] =
+    Task.delay(ks.setKeyEntry(name, key, pass, certs.toArray[Certificate]))
 
-  private[remotely] def addCerts(ks: KeyStore, name: String, certs: Process[Task,Certificate]): Task[KeyStore] = certs.zipWithIndex.runFoldMap{ case (c,i) => addCert(c,name+i,ks) }.map(_ => ks)
+  private[remotely] def addCerts(ks: KeyStore, name: String, certs: Stream[Task,Certificate])(implicit M: Monoid[Task[Unit]]): Task[KeyStore] =
+    certs.through(pipe.zipWithIndex).runFold { M.empty } { case (t, (c, i)) => M.combine(t, addCert(c,name+i,ks)) }.map { _ => ks }
 
-  private[remotely] def stripCruftFromPEM(withHeaders: Boolean): Process1[String,String] = {
-    def untilBegin: Process1[String,String] =
-      receive1Or[String,String](halt){ s =>
-        if(s startsWith "-----BEGIN") {
-          if(withHeaders) emit(s+"\n") else halt
-        } else {
-          untilBegin
-        }
-      }
-
-    def untilEnd: Process1[String,String] = {
-      receive1Or[String,String](fail(new IllegalArgumentException("Not a valid KEY, didn't find END marker")))  { s =>
-        if(s startsWith "-----END")
-          if(withHeaders) emit(s+"\n") else halt
-        else if(withHeaders) (emit(s + "\n") ++ untilEnd) else (emit(s) ++ untilEnd)
-      }
+  private[remotely] def stripCruftFromPEM(withHeaders: Boolean): Pipe[Pure, String, String] = {
+    def goBeginning: Stream.Handle[Pure, String] => Pull[Pure, String, Stream.Handle[Pure, String]] = Pull.receive1Option {
+      case Some(str #: h) =>
+        if (str startsWith "-----BEGIN") {
+          if (withHeaders) Pull.output1(str + "\n") >> goEnd(h) else goEnd(h)
+        } else goBeginning(h)
+      case None => Pull.done
     }
-
-    (untilBegin ++ untilEnd).foldMap(identity).repeat.filter(_.length > 0)
-
+    def goEnd: Stream.Handle[Pure, String] => Pull[Pure, String, Stream.Handle[Pure, String]] = Pull.receive1Option {
+      case Some(str #: h) =>
+        if(str startsWith "-----END") {
+          if (withHeaders) Pull.output1(str + "\n") >> goBeginning(h) else goBeginning(h)
+        } else Pull.output1(str + (if (withHeaders) "\n" else "")) >> goEnd(h)
+      case None => Pull.fail(new IllegalArgumentException("Not a valid KEY, didn't find END marker"))
+    }
+    _ pull goBeginning
   }
 
-  def pemString(s: InputStream, withHeaders: Boolean): Process[Task,String] = (io.linesR(s) |> stripCruftFromPEM(withHeaders))
+  def pemString(path: Path, withHeaders: Boolean): Stream[Task,String] = fs2io.file.readAll[Task](path, 4096)
+    .through(text.utf8Decode)
+    .through(text.lines)
+    .through(stripCruftFromPEM(withHeaders))
+    .through(pipe.fold("")((o, i) => o ++ i))
 
-  def certFromPEM(s: InputStream): Process[Task,Certificate] =
-    pemString(s, true) map (str => CertificateFactory.getInstance("X.509").generateCertificate(new ByteArrayInputStream(str.getBytes("US-ASCII"))))
+  def certFromPEM(path: Path): Stream[Task,Certificate] =
+    pemString(path, true) map { str =>
+      CertificateFactory.getInstance("X.509").generateCertificate(new ByteArrayInputStream(str.getBytes("US-ASCII")))
+    }
 
-  def keyFromPkcs8(s: InputStream): Process[Task,PrivateKey] =
-    pemString(s, false).flatMap { str =>
-      ByteVector.fromBase64(str).fold[Process[Task,PrivateKey]](Process.fail(new IllegalArgumentException("could not parse PEM data"))){ decoded =>
+  def keyFromPkcs8(path: Path): Stream[Task,PrivateKey] =
+    pemString(path, false).flatMap { str =>
+      ByteVector.fromBase64(str).fold[Stream[Task,PrivateKey]](Stream.fail(new IllegalArgumentException("could not parse PEM data"))){ decoded =>
         val spec = new PKCS8EncodedKeySpec(decoded.toArray)
-        emit(KeyFactory.getInstance("RSA").generatePrivate(spec))
+        Stream.emit(KeyFactory.getInstance("RSA").generatePrivate(spec))
       }
     }
 
-
-  private[remotely] def keyFromEncryptedPkcs8(s: InputStream, pass: Array[Char]): Process[Task,PrivateKey] =
-    pemString(s, false) map (str => KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(str.getBytes("US-ASCII"))))
+  private[remotely] def keyFromEncryptedPkcs8(path: Path, pass: Array[Char]): Stream[Task,PrivateKey] =
+    pemString(path, false) map (str => KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(str.getBytes("US-ASCII"))))
 }
 
 case class SslParameters(caBundle: Option[File],
@@ -111,32 +118,25 @@ case class SslParameters(caBundle: Option[File],
 
 object SslParameters {
 
-  private[remotely] def trustManagerForBundle(caBundle: File): Task[TrustManagerFactory] = {
-    Task.delay {
-      val keystore = SSL.emptyKeystore
-      val trustSet = new java.util.HashSet[TrustAnchor]()
-
-      // I promise that effects are associative as long as you execute them in the right order
-      implicit val taskMonoid: Monoid[Task[Unit]] = Monoid.instance((a,b) => a flatMap(_ => b), Task.now(()))
-
-      val doRun = SSL.certFromPEM(new FileInputStream(caBundle)).foldMap {
-        case cert: X509Certificate =>
-          val name = cert.getSubjectDN().getName()
-          if(cert.getBasicConstraints != -1) trustSet.add(new TrustAnchor(cert, null))
-          SSL.addCert(cert, name, keystore)
-        case cert => throw new IllegalArgumentException("unexpected cert which is not x509")
-      }
-      doRun.run.run // da do run run: https://www.youtube.com/watch?v=uTqnam1zgiw
-
+  private[remotely] def trustManagerForBundle(caBundle: File): Task[TrustManagerFactory] = for {
+    trustSet <- Task.now(new java.util.HashSet[TrustAnchor]())
+    _ <- SSL.certFromPEM(Paths.get(caBundle.getPath)).flatMap {
+      case cert: X509Certificate =>
+        val name = cert.getSubjectDN.getName
+        if (cert.getBasicConstraints != -1) trustSet.add(new TrustAnchor(cert, null))
+        Stream.eval(SSL.addCert(cert, name, SSL.emptyKeystore))
+      case cert =>
+        Stream.fail(new IllegalArgumentException("unexpected cert which is not x509"))
+    }.run
+    tm <- Task.delay {
       val tm = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
       val builder = new PKIXBuilderParameters(trustSet, new X509CertSelector)
       builder.setRevocationEnabled(false)
       val cptmp: CertPathTrustManagerParameters = new CertPathTrustManagerParameters(builder)
-
       tm.init(cptmp)
       tm
     }
-  }
+  } yield tm
 
   private[remotely] def toClientContext(params: Option[SslParameters]): Task[Option[SslContext]] = {
     params.traverse { params =>

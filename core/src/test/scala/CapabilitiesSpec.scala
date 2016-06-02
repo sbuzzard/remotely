@@ -17,13 +17,12 @@
 
 package remotely
 
+import fs2._
 import java.util.concurrent.Executors
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import remotely.transport.netty._
 import scala.concurrent.duration.DurationInt
-import scalaz.stream.Process
-import scalaz.concurrent.{Strategy,Task}
 import codecs._
 
 class CapabilitiesSpec extends FlatSpec
@@ -33,12 +32,12 @@ class CapabilitiesSpec extends FlatSpec
   val addr1 = new java.net.InetSocketAddress("localhost", 9003)
 
   val server1 = new CountServer
-  val shutdown1: Task[Unit] = server1.environment.serve(addr1, capabilities = Capabilities(Set())).run
+  val shutdown1: Task[Unit] = server1.environment.serve(addr1, capabilities = Capabilities(Set())).unsafeRun
 
   override def afterAll() {
-    shutdown1.run
+    shutdown1.unsafeRun
   }
-  val endpoint1 = (NettyTransport.single(addr1) map Endpoint.single).run
+  val endpoint1 = (NettyTransport.single(addr1) map Endpoint.single).unsafeRun
 
   behavior of "Capabilities"
 
@@ -49,7 +48,7 @@ class CapabilitiesSpec extends FlatSpec
 
     an[IncompatibleServer] should be thrownBy (
       try {
-        val _ = evaluate(endpoint1, Monitoring.empty)(CountClient.ping(1)).apply(Context.empty).run
+        val _ = evaluate(endpoint1, Monitoring.empty)(CountClient.ping(1)).apply(Context.empty).unsafeRun
       } catch {
         case t: IncompatibleServer =>
           throw t

@@ -23,13 +23,13 @@ import scala.util.parsing.combinator._
 
 /**
   * A Set of capabilities that a server possesses.
-  * 
+  *
   * this set of capabilities will be transmitted from Server to client
   * at the time when a connection is built.
-  * 
+  *
   * Currently there is only one known capability, which is the
   * "Remotely 1.0" capability.
-  * 
+  *
   * You can see this if you telnet to a running remotely server:
   * {{{
       $ telnet localhost 9999
@@ -38,18 +38,18 @@ import scala.util.parsing.combinator._
       Escape character is '^]'.
       OK: [Remotely 1.0]
   * }}}
-  * 
+  *
   * The OK line spit out by the server contains a comma separated list
   * of capabilities between the square brackets.
-  * 
+  *
   * In the future we might revision our wire format, perhaps because
   * we want to also allow for XML serialization of objects. Perhaps we
   * want to add STARTTLS support, perhaps we want to add a way to
   * fetch documentation for the functions exported by this server,
   * someday in the future, a remotely server might respond with:
-  * 
+  *
   * OK: [Remotely 1.0, STARTTLS, Remotely XML 1.0, Remotely 2.0]
-  * 
+  *
   * When the client receives this string as part of the connection
   * negotiation, it can perhaps adapt its behavior depending on the
   * server capabilities, or it could decide not to talk to this
@@ -88,7 +88,7 @@ object Capabilities extends RegexParsers {
   val capabilitiesCodec: Codec[Capabilities] = new Codec[Capabilities] {
 
     def sizeBound = SizeBound.unknown
-    
+
     override def encode(c: Capabilities): Attempt[BitVector] = {
       val s = "OK: " + c.capabilities.mkString("[",",","]") + "\n"
       Attempt.successful(BitVector(s.getBytes))
@@ -99,7 +99,7 @@ object Capabilities extends RegexParsers {
         case DecodeResult(s, b) ⇒ parseHelloString(s).map(DecodeResult(_, b))
       }
     }
-    
+
   }
-  
+
 }
