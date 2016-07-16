@@ -29,6 +29,8 @@ class CapabilitiesSpec extends FlatSpec
     with Matchers
     with BeforeAndAfterAll {
 
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
+
   val addr1 = new java.net.InetSocketAddress("localhost", 9003)
 
   val server1 = new CountServer

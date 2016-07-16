@@ -119,7 +119,7 @@ object Endpoint {
   } yield ((t2 - t1).milliseconds, a)
 
   private object raceHandlerPool {
-    implicit val s: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("remotely-client-pool"))
+    implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("remotely-client-pool"))
     def apply(pool: Stream[Task, Stream[Task, Handler]]): Stream[Task, Handler] = concurrent.join(1024)(pool)
   }
 }

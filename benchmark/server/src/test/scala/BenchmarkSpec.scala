@@ -20,7 +20,7 @@ package example.benchmark
 package server
 package test
 
-import fs2.Task
+import fs2.{ Strategy, Task }
 
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
@@ -40,6 +40,8 @@ class BenchmarkServerSpec extends FlatSpec
   val addr = new java.net.InetSocketAddress("localhost", 9001)
   val server = new BenchmarkServerImpl
   val shutdown: Task[Unit] = server.environment.serve(addr).unsafeRun
+
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   val endpoint = Endpoint.single(NettyTransport.single(addr).unsafeRun())
 

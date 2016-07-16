@@ -21,8 +21,8 @@ import cats.{Applicative,Monad}
 import cats.data.Xor
 import cats.implicits._
 
-import fs2.{Async,Strategy,Task}
-import fs2.util.{~>,Free}
+import fs2.{Strategy,Task}
+import fs2.util.{~>,Async,Free}
 import fs2.interop.cats._
 
 import java.util.UUID
@@ -59,29 +59,24 @@ object Response {
   /** instance for Monadic `Async` Response`. */
   implicit def asyncResponseInstance(implicit S: Strategy, AT: Async[Task]): Async[Response] = new Async[Response] {
     def ref[A]: Response[Async.Ref[Response,A]] = Response { _ => Async.ref[Task, A](AT) map { new ResponseRef(_, this) } }
-    def flatMap[A, B](a: Response[A])(f: A => Response[B]): Response[B] =
-      Response { ctx => Task.suspend { a(ctx).flatMap(f andThen (_(ctx))) }}
+    def flatMap[A, B](ra: Response[A])(f: A => Response[B]): Response[B] =
+      Response { ctx => Task.suspend { ra(ctx).flatMap(f andThen (_(ctx))) }}
     def pure[A](a: A): Response[A] = Response.now(a)
     override def delay[A](a: => A): Response[A] = Response.delay(a)
-    def suspend[A](fa: => Response[A]) = Response.suspend(fa)
+    def suspend[A](ra: => Response[A]) = Response.suspend(ra)
     def fail[A](err: Throwable): Response[A] = Response.fail(err)
-    def attempt[A](a: Response[A]): Response[Either[Throwable, A]] = a.attempt map { _.toEither }
+    def attempt[A](ra: Response[A]): Response[Either[Throwable, A]] = ra.attempt map { _.toEither }
+    def unsafeRunAsync[A](ra: Response[A])(cb: Either[Throwable, A] => Unit): Unit = ra(Context.empty).unsafeRunAsync(cb)
     override def toString = "Async[Response]"
 
     class ResponseRef[A](ref: Async.Ref[Task, A], protected val F: Async[Response]) extends Async.Ref[Response, A] {
       def access: Response[(A, Either[Throwable,A] => Response[Boolean])] = Response { _ =>
         ref.access.map { case (a,e2r) => (a, e2r andThen { t => Response { _ => t } }) }
       }
-      def set(a: Response[A]): Response[Unit] = a edit { t => ref.set(t) }
-      def setFree(a: Free[Response, A]): Response[Unit] = Response { ctx =>
-        object translateFunc extends (Response ~> Task) { def apply[R](ra: Response[R]): Task[R] = ra(ctx) }
-        ref.setFree(a.translate(translateFunc))
-      }
-
-      /* TODO: need to be able to call runSet */
-      def runSet(tora: Either[Throwable, A]): Unit = tora.fold(Task.fail, a => ref.set(Task.now(a))).unsafeRunAsync { _ => () }
+      def set(ra: Response[A]): Response[Unit] = ra edit { ref.set }
 
       override def get: Response[A] = Response { _ => ref.get }
+
       def cancellableGet: Response[(Response[A], Response[Unit])] = Response { ctx =>
         ref.cancellableGet map { case (ra, ru) => (Response { _ => ra }, Response { _ => ru }) }
       }

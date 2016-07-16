@@ -17,7 +17,7 @@
 
 package remotely
 
-import fs2.Stream
+import fs2.{ Strategy, Stream }
 
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 import remotely.transport.netty.NettyTransport
@@ -27,6 +27,7 @@ import scala.concurrent.duration.DurationInt
 class EndpointSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
   behavior of "failoverChain"
   it should "work" in {
+    implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
     val goodAddress = new java.net.InetSocketAddress("localhost", 9007)
     val badAddress = new java.net.InetSocketAddress("localhost", 9009)
 

@@ -17,6 +17,7 @@
 
 package remotely
 
+import fs2.Strategy
 import collection.immutable.SortedSet
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import codecs._
@@ -27,6 +28,8 @@ class ProtocolSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
   val addr = new java.net.InetSocketAddress("localhost", 9002)
   val server = new TestServer
   val shutdown = server.environment.serve(addr).unsafeRun
+
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   val endpoint = (NettyTransport.single(addr, monitoring = Monitoring.consoleLogger("ProtocolSpec")) map Endpoint.single).unsafeRun
 

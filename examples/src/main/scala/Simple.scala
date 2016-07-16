@@ -18,13 +18,14 @@
 package remotely
 package examples
 
-import fs2.Task
+import fs2.{ Strategy, Task }
 
 import java.net.InetSocketAddress
 import remotely.transport.netty.NettyTransport
 import codecs._
 
 object Simple {
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   def foo(i: Int): String = "BONUS"
 
@@ -63,6 +64,8 @@ object Simple {
 object SimpleMain extends App {
   import Simple.{env,addr,sum}
   import Remote.implicits._
+
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   println(env)
 

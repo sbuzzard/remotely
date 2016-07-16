@@ -19,7 +19,7 @@ package remotely
 
 import cats.data.OptionT
 import cats.implicits._
-import fs2.{Stream,Task}
+import fs2.{Strategy,Stream,Task}
 import fs2.interop.cats._
 
 import org.scalatest.matchers.{Matcher,MatchResult}
@@ -82,6 +82,7 @@ class SSLSpec extends FlatSpec
 
   val addr = new java.net.InetSocketAddress("localhost", 9101)
   val server = new TestServer
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   it should "be able to do client authentication" in {
     import remotely.Remote.implicits._

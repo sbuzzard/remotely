@@ -18,7 +18,7 @@
 package remotely
 package examples
 
-import fs2.Task
+import fs2.{ Strategy, Task }
 
 import codecs._
 import Remote.implicits._
@@ -31,6 +31,7 @@ import transport.netty._
  * and pushed onto the trace stack for each nested remote request.
  */
 object Multiservice extends App {
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   // Define a service exposing `sum` and `length` functions for `List[Double]`
   val env1 = Environment.empty

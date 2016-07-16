@@ -25,7 +25,7 @@ import cats.implicits._
 
 import example.benchmark.{SmallW, BigW, MediumW, LargeW}
 
-import fs2.Task
+import fs2.{ Strategy, Task }
 import fs2.interop.cats._
 
 import remotely._
@@ -147,6 +147,7 @@ object BenchmarkClientMain extends TestData with transformations {
   def main(argv: Array[String]): Unit = {
     if(argv.length < 3) usage()
 
+    implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
     val port = Integer.parseInt(argv(0))
     val addr = new java.net.InetSocketAddress("localhost", port)
     val nettyTrans = NettyTransport.single(addr, server.BenchmarkClient.expectedSignatures, monitoring = Monitoring.consoleLogger("benchmarkClient")).unsafeRun

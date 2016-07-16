@@ -17,7 +17,7 @@
 
 package remotely
 
-import fs2.Task
+import fs2.{ Strategy, Task }
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import org.scalacheck._
@@ -48,6 +48,7 @@ object RemoteSpec extends Properties("Remote") {
 
   val addr = new InetSocketAddress("localhost", 8082)
   val server = env.serve(addr).unsafeRun
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
   val nettyTrans = NettyTransport.single(addr).unsafeRun
   val loc: Endpoint = Endpoint.single(nettyTrans)
 

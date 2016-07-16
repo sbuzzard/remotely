@@ -18,12 +18,14 @@
 package remotely
 package test
 
+import fs2.Strategy
 import org.scalatest.{Matchers, FlatSpec}
 import remotely.transport.netty.NettyTransport
 import codecs._
 import Remote.implicits._
 
 class ServerErrors extends FlatSpec with Matchers {
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
   behavior of "missing codec on the server"
   it should "throw the appropriate error if missing encoder for the response" in {
     val address = new java.net.InetSocketAddress("localhost", 9013)

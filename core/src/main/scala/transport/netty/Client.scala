@@ -56,7 +56,7 @@ class NettyTransport(val pool: GenericObjectPool[Channel])(implicit S: Strategy)
 
 object NettyTransport {
   private val clientQueuePool = Strategy.fromExecutor(fixedNamedThreadPool("client-queue-pool"))
-  def evalCF(cf: ChannelFuture)(implicit S: Strategy): Task[Unit] = Task.unforkedAsync { cb =>
+  def evalCF(cf: ChannelFuture)(implicit S: Strategy): Task[Unit] = Task.unforkedAsync { (cb: Either[Throwable, Unit] => Unit) =>
     cf.addListener(new ChannelFutureListener {
       def operationComplete(cf: ChannelFuture): Unit = if (cf.isSuccess) cb(Right(())) else cb(Left(cf.cause))
     })
@@ -69,6 +69,6 @@ object NettyTransport {
              expectedSigs: Set[Signature] = Set.empty,
              workerThreads: Option[Int] = None,
              monitoring: Monitoring = Monitoring.empty,
-             sslParams: Option[SslParameters] = None)(implicit S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("netty-transport"))): Task[NettyTransport] =
+             sslParams: Option[SslParameters] = None)(implicit S: Strategy): Task[NettyTransport] =
     NettyConnectionPool.default(Stream.constant(host), expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
 }

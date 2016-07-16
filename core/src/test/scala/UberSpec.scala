@@ -17,7 +17,7 @@
 
 package remotely
 
-import fs2.{Stream,Task}
+import fs2.{Strategy,Stream,Task}
 
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
@@ -26,6 +26,7 @@ import scala.concurrent.duration.DurationInt
 import java.util.concurrent.Executors
 
 class UberSpec extends FlatSpec with Matchers with BeforeAndAfterAll {
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
   behavior of "permutations"
   it should "work" in {
     val input: Stream[Task,Int] = Stream.emits(Vector(1,2,3)).covary[Task]

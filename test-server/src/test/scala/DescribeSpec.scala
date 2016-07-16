@@ -18,6 +18,7 @@
 package remotely
 package test
 
+import fs2.Strategy
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import scodec.Decoder
@@ -47,6 +48,8 @@ class DescribeSpec extends FlatSpec
   val shutdownN = serverN.environment.serve(addrN).unsafeRun
 
   val shutdownO = serverO.environment.serve(addrO).unsafeRun
+
+  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
 
   val endpointOldToOld = Endpoint.single(NettyTransport.single(addrO, DescribeTestOlderClient.expectedSignatures, monitoring = Monitoring.consoleLogger("OldToOld")).unsafeRun())
   val endpointOldToNew = Endpoint.single(NettyTransport.single(addrN, DescribeTestOlderClient.expectedSignatures, monitoring = Monitoring.consoleLogger("OldToNew")).unsafeRun())
