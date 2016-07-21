@@ -25,10 +25,8 @@ import fs2.{Strategy,Stream,Task}
 import java.net.InetSocketAddress
 import java.util.concurrent.{Executors, ThreadFactory}
 import io.netty.util.concurrent.{Future, GenericFutureListener}
-import org.apache.commons.pool2.BasePooledObjectFactory
-import org.apache.commons.pool2.PooledObject
-import org.apache.commons.pool2.impl.DefaultPooledObject
-import org.apache.commons.pool2.impl.GenericObjectPool
+import org.apache.commons.pool2.{BasePooledObjectFactory, PooledObject}
+import org.apache.commons.pool2.impl.{DefaultPooledObject, GenericObjectPool, GenericObjectPoolConfig}
 import io.netty.channel._, socket._
 import io.netty.channel.nio._
 import io.netty.bootstrap.Bootstrap
@@ -47,9 +45,19 @@ object NettyConnectionPool {
               expectedSigs: Set[Signature] = Set.empty,
               workerThreads: Option[Int] = None,
               monitoring: Monitoring = Monitoring.empty,
-              sslParams: Option[SslParameters])(implicit S: Strategy): Task[GenericObjectPool[Channel]] = {
+              sslParams: Option[SslParameters],
+              channelPoolConfig: Option[ChannelPoolConfig] = None)(implicit S: Strategy): Task[GenericObjectPool[Channel]] = {
     SslParameters.toClientContext(sslParams) map { ssl =>
-      new GenericObjectPool[Channel](new NettyConnectionPool(hosts, expectedSigs, workerThreads, monitoring, ssl))
+      val poolConfig = {
+        val gopc = new GenericObjectPoolConfig()
+        channelPoolConfig foreach { cpc =>
+          gopc.setMaxTotal(cpc.maxTotal)
+          gopc.setMaxIdle(cpc.maxIdle)
+          gopc.setMinIdle(cpc.minIdle)
+        }
+        gopc
+      }
+      new GenericObjectPool[Channel](new NettyConnectionPool(hosts, expectedSigs, workerThreads, monitoring, ssl), poolConfig)
     }
   }
 }

@@ -69,6 +69,7 @@ object NettyTransport {
              expectedSigs: Set[Signature] = Set.empty,
              workerThreads: Option[Int] = None,
              monitoring: Monitoring = Monitoring.empty,
-             sslParams: Option[SslParameters] = None)(implicit S: Strategy): Task[NettyTransport] =
-    NettyConnectionPool.default(Stream.constant(host), expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
+             sslParams: Option[SslParameters] = None,
+             channelPoolConfig: Option[ChannelPoolConfig] = None)(implicit S: Strategy): Task[NettyTransport] =
+    NettyConnectionPool.default(Stream.constant(host), expectedSigs, workerThreads, monitoring, sslParams, channelPoolConfig).map(new NettyTransport(_))
 }
