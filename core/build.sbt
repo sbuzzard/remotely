@@ -26,8 +26,8 @@ libraryDependencies ++= Seq(
   "co.fs2"                  %% "fs2-cats"                  % "0.1.0-M6",
   "co.fs2"                  %% "fs2-io"                    % "0.9.0-M6",
   "org.apache.commons"      % "commons-pool2"              % "2.4.2",
-  "io.netty"                % "netty-handler"              % "4.1.3.Final",
-  "io.netty"                % "netty-codec"                % "4.1.3.Final"
+  "io.netty"                % "netty-handler"              % "4.1.4.Final",
+  "io.netty"                % "netty-codec"                % "4.1.4.Final"
 )
 
 common.macrosSettings
