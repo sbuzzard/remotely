@@ -17,4 +17,20 @@
 
 package remotely.transport
 
-package object netty
+import fs2._
+
+import scala.language.higherKinds
+
+package object netty {
+  def unLeftFail[F[_], I]: Stream[F, Either[Throwable, I]] => Stream[F, I] = _ repeatPull {
+    _.receive {
+      case hd #: tl =>
+        val failureMaybe = hd.toVector.collectFirst { case Left(t) => t }
+        def success = {
+          val out = Chunk.indexedSeq(hd.toVector.collect { case Right(i) => i })
+          if (out.size == hd.size) Pull.output(out) as tl else if (out.isEmpty) Pull.done else Pull.output(out) >> Pull.done
+        }
+        failureMaybe.fold(success)(Pull.fail)
+    }
+  }
+}

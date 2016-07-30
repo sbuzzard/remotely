@@ -30,8 +30,8 @@ import scodec.bits.BitVector
 class NettyTransport(val pool: GenericObjectPool[Channel])(implicit S: Strategy) extends Handler {
   import NettyTransport._
   def apply(toServer: Stream[Task, BitVector]): Stream[Task, BitVector] = {
-    case class QueueableChannel(q: async.mutable.Queue[Task, Option[BitVector]], c: Channel)
-    val openQueueableChannel = async.unboundedQueue[Task, Option[BitVector]].async(NettyTransport.clientQueuePool) map { q =>
+    case class QueueableChannel(q: async.mutable.Queue[Task, Option[Either[Throwable, BitVector]]], c: Channel)
+    val openQueueableChannel = async.unboundedQueue[Task, Option[Either[Throwable, BitVector]]].async(NettyTransport.clientQueuePool) map { q =>
       val c = pool.borrowObject
       c.pipeline.addLast("clientDeframe", new ClientDeframedHandler(q))
       QueueableChannel(q, c)
@@ -39,7 +39,7 @@ class NettyTransport(val pool: GenericObjectPool[Channel])(implicit S: Strategy)
     Stream.eval(openQueueableChannel).flatMap { qc =>
       val toFrame = toServer.map(Bits(_)) ++ Stream.emit(EOS)
       val writeBytes: Task[Unit] = toFrame.evalMap(write(qc.c)).run flatMap { _ => Task.delay { val _ = qc.c.flush } }
-      Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate)).append(Stream.eval_(Task.delay(pool.returnObject(qc.c)))).onError { t =>
+      Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate andThen unLeftFail)).append(Stream.eval_(Task.delay(pool.returnObject(qc.c)))).onError { t =>
         pool.invalidateObject(qc.c)
         Stream.fail(t)
       }

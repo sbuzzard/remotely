@@ -92,6 +92,9 @@ package object remotely {
     }
   }}
 
+  implicit class EnrichedThrowable(val t: Throwable) extends AnyVal {
+    def safeMessage: String = Option(t.getMessage).getOrElse(t.toString)
+  }
   implicit class RemotelyEnrichedAttempt[A](val self: Attempt[A]) extends AnyVal {
     def toTask: Task[A] = toTask(err => new IllegalArgumentException(err.messageWithContext))
     def toTask(f: Err => Throwable): Task[A] = self.fold(e => Task.fail(f(e)), Task.now)

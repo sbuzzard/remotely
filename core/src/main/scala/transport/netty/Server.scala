@@ -155,7 +155,7 @@ object NettyServer {
   */
 class ServerDeframedHandler(handler: Handler, logger: Monitoring)(implicit S: Strategy) extends SimpleChannelInboundHandler[Framed] {
 
-  @volatile private var queue: Option[async.mutable.Queue[Task, Option[BitVector]]] = None
+  @volatile private var queue: Option[async.mutable.Queue[Task, Option[Either[Throwable, BitVector]]]] = None
 
   //
   //  We've getting some bits, make sure we have a queue open if these
@@ -168,27 +168,27 @@ class ServerDeframedHandler(handler: Handler, logger: Monitoring)(implicit S: St
   //    - evalMap that stream onto the side effecty "Context" to write
   //      bytes back to to the client (i hate the word context)
   //
-  private def ensureQueue(ctx: ChannelHandlerContext): Task[async.mutable.Queue[Task, Option[BitVector]]] = {
+  private def ensureQueue(ctx: ChannelHandlerContext): Task[async.mutable.Queue[Task, Option[Either[Throwable, BitVector]]]] = {
     val newQueue = for {
       _ <- Task.delay(logger.negotiating(Option(ctx.channel.remoteAddress), "creating queue", None))
-      q <- async.unboundedQueue[Task, Option[BitVector]]
-      framed = handler(q.dequeue.through(pipe.unNoneTerminate)).map(Bits(_)).append(Stream.emit(EOS))
+      q <- async.unboundedQueue[Task, Option[Either[Throwable, BitVector]]]
+      framed = handler(q.dequeue.through(pipe.unNoneTerminate andThen unLeftFail)).map(Bits(_)).append(Stream.emit(EOS))
       _ <- Task.start(framed.evalMap { b => Task.delay(ctx.write(b)) }.run flatMap { _ => Task.delay(ctx.flush) })
       _ <- Task.delay(queue = Some(q))
     } yield q
     Task.delay(queue) flatMap { _.fold(newQueue) { Task.now } }
   }
 
-  override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
-    ee.printStackTrace()
-    fail(ee.getMessage, ctx).unsafeRun
-  }
-
-  // there has been an error
-  private def fail(message: String, ctx: ChannelHandlerContext): Task[Unit] = for {
-    _ <- Task.delay(ctx.channel.close())
-    _ <- closeQueue(ctx)
-  } yield ()
+  override def exceptionCaught(ctx: ChannelHandlerContext, e: Throwable): Unit = (for {
+    _ <- Task.delay(ctx.channel.close()).attempt
+    _ <- Task.delay(logger.negotiating(Option(ctx.channel.remoteAddress), "shutting down queue on failure", None))
+    q <- Task.delay {
+      val q = queue
+      queue = None
+      q
+    }
+    _ <- q.fold(Task.now(())) { _.enqueue1(Some(Left(e))) }
+  } yield ()).unsafeRun
 
   // we've seen the end of the input, close the queue writing to the input stream
   private def closeQueue(ctx: ChannelHandlerContext): Task[Unit] = for {
@@ -198,13 +198,13 @@ class ServerDeframedHandler(handler: Handler, logger: Monitoring)(implicit S: St
       queue = None
       q
     }
-    _ <- q.fold(Task.now(())) { _.enqueue1(Option.empty[BitVector]) }
+    _ <- q.fold(Task.now(())) { _.enqueue1(Option.empty[Either[Throwable, BitVector]]) }
   } yield ()
 
   override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit = (f match {
     case Bits(bv) => for {
       q <- ensureQueue(ctx)
-      _ <- q.enqueue1(Some(bv))
+      _ <- q.enqueue1(Some(Right(bv)))
     } yield ()
     case EOS =>
       closeQueue(ctx)

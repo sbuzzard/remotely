@@ -145,15 +145,15 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
     private[this] def fail(msg: String): Unit = {
       val err = IncompatibleServer(msg)
 
-      val pipe = channel.pipeline()
-      pipe.removeLast()
+      val _ = Xor.catchNonFatal { channel.pipeline().removeLast() }
+
       M.negotiating(Some(addr), "description", Some(err))
       cb(Left(err))
     }
 
     override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
       ee.printStackTrace()
-      fail(ee.getMessage)
+      fail(ee.safeMessage)
     }
 
     // negotiation succeeded, fulfill the callback positively, and

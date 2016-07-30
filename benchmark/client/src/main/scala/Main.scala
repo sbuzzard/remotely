@@ -74,7 +74,7 @@ class Test(results: Results, task: Task[_]) extends Runnable {
   }
 
   def error(start: Long)(e: Throwable): Unit = {
-    results.failure(e.getMessage, System.nanoTime - start)
+    results.failure(e.safeMessage, System.nanoTime - start)
   }
 
   def success(start: Long)(x: Any): Unit = {

@@ -129,7 +129,7 @@ package object codecs extends lowerprioritycodecs {
     header <- map[String,String]
     stackS <- list[String]
     stack <- try succeed(stackS.map(Response.ID.fromString))
-             catch { case e: IllegalArgumentException => fail(Err(s"[decoding] error decoding ID in tracing stack: ${e.getMessage}")) }
+             catch { case e: IllegalArgumentException => fail(Err(s"[decoding] error decoding ID in tracing stack: ${e.safeMessage}")) }
   } yield Response.Context(header, stack)
 
   def remoteEncode(r: Remote[Any]): Attempt[BitVector] =

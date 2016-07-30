@@ -138,7 +138,7 @@ object Monitoring {
                              what: String,
                              error: Option[Throwable]): Unit = {
       error.fold(println(s"$prefix NEGOTIATION - $what with ${renderAddress(addr)}")){e =>
-        println(s"$prefix NEGOTIATION FAILURE - $what with ${renderAddress(addr)}: ${e.getMessage}")
+        println(s"$prefix NEGOTIATION FAILURE - $what with ${renderAddress(addr)}: ${e.safeMessage}")
       }
     }
   }

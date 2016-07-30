@@ -140,24 +140,18 @@ class Deframe extends ByteToMessageDecoder {
   }
 }
 
-class ClientDeframedHandler(queue: async.mutable.Queue[Task, Option[BitVector]])(implicit S: Strategy) extends SimpleChannelInboundHandler[Framed] {
-  // there has been an error
-  private def fail(message: String, ctx: ChannelHandlerContext): Task[Unit] = {
-    queue.enqueue1(Option.empty[BitVector]) map { _ =>
-      val _ = ctx.channel.close()
-    }
-  }
+class ClientDeframedHandler(queue: async.mutable.Queue[Task, Option[Either[Throwable, BitVector]]])(implicit S: Strategy) extends SimpleChannelInboundHandler[Framed] {
 
-  override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
-    ee.printStackTrace()
-    fail(ee.getMessage, ctx).unsafeRun
+  override def exceptionCaught(ctx: ChannelHandlerContext, e: Throwable): Unit = {
+    queue.enqueue1(Some(Left(e))).flatMap { _ => Task.delay(ctx.channel.close()).attempt }.unsafeRun
+    ()
   }
 
   override def channelRead0(ctx: ChannelHandlerContext, f: Framed): Unit = (f match {
     case Bits(bv) =>
-      queue.enqueue1(Some(bv))
+      queue.enqueue1(Some(Right(bv)))
     case EOS =>
-      queue.enqueue1(Option.empty[BitVector])
+      queue.enqueue1(Option.empty[Either[Throwable, BitVector]])
   }).unsafeRun
 }
 
