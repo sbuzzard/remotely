@@ -23,33 +23,34 @@ import cats.data.Xor
 import fs2.{async,pipe,Strategy,Stream,Task}
 
 import java.net.InetSocketAddress
-import org.apache.commons.pool2.impl.GenericObjectPool
 import io.netty.channel.{Channel,ChannelFuture,ChannelHandlerContext,ChannelFutureListener}
+import io.netty.channel.pool.ChannelPool
 import scodec.bits.BitVector
 
-class NettyTransport(val pool: GenericObjectPool[Channel])(implicit S: Strategy) extends Handler {
+class NettyTransport(val pool: NettyConnectionPool)(implicit S: Strategy) extends Handler {
   import NettyTransport._
   def apply(toServer: Stream[Task, BitVector]): Stream[Task, BitVector] = {
     case class QueueableChannel(q: async.mutable.Queue[Task, Option[Either[Throwable, BitVector]]], c: Channel)
-    val openQueueableChannel = async.unboundedQueue[Task, Option[Either[Throwable, BitVector]]].async(NettyTransport.clientQueuePool) map { q =>
-      val c = pool.borrowObject
-      c.pipeline.addLast("clientDeframe", new ClientDeframedHandler(q))
-      QueueableChannel(q, c)
+    val openQueueableChannel = async.unboundedQueue[Task, Option[Either[Throwable, BitVector]]].async(NettyTransport.clientQueuePool) flatMap { q =>
+      fromNettyFuture(pool.acquire) map { c =>
+        c.pipeline.addLast("clientDeframe", new ClientDeframedHandler(q))
+        QueueableChannel(q, c)
+      }
     }
     Stream.eval(openQueueableChannel).flatMap { qc =>
       val toFrame = toServer.map(Bits(_)) ++ Stream.emit(EOS)
       val writeBytes: Task[Unit] = toFrame.evalMap(write(qc.c)).run flatMap { _ => Task.delay { val _ = qc.c.flush } }
-      Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate andThen unLeftFail)).append(Stream.eval_(Task.delay(pool.returnObject(qc.c)))).onError { t =>
-        pool.invalidateObject(qc.c)
-        Stream.fail(t)
+      Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate andThen unLeftFail)).append(Stream.eval_(fromNettyFuture(pool.release(qc.c)))).onError { t =>
+        Xor.catchNonFatal(qc.c.close)
+        Stream.eval(fromNettyFuture(pool.release(qc.c))) flatMap { _ => Stream.fail(t) }
       }
     }
   }
 
   def shutdown: Task[Unit] = Task.delay {
-    pool.clear()
     pool.close()
-    val _ = pool.getFactory().asInstanceOf[NettyConnectionPool].workerThreadPool.shutdownGracefully()
+    pool.workerThreadPool.shutdownGracefully()
+    ()
   }
 }
 
@@ -69,7 +70,6 @@ object NettyTransport {
              expectedSigs: Set[Signature] = Set.empty,
              workerThreads: Option[Int] = None,
              monitoring: Monitoring = Monitoring.empty,
-             sslParams: Option[SslParameters] = None,
-             channelPoolConfig: Option[ChannelPoolConfig] = None)(implicit S: Strategy): Task[NettyTransport] =
-    NettyConnectionPool.default(Stream.constant(host), expectedSigs, workerThreads, monitoring, sslParams, channelPoolConfig).map(new NettyTransport(_))
+             sslParams: Option[SslParameters] = None)(implicit S: Strategy): Task[NettyTransport] =
+    NettyConnectionPool.default(host, expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
 }

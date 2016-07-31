@@ -19,9 +19,14 @@ package remotely.transport
 
 import fs2._
 
+import _root_.io.netty.channel._
+import _root_.io.netty.channel.pool._
+import _root_.io.netty.util.concurrent._
+
 import scala.language.higherKinds
 
 package object netty {
+
   def unLeftFail[F[_], I]: Stream[F, Either[Throwable, I]] => Stream[F, I] = _ repeatPull {
     _.receive {
       case hd #: tl =>
@@ -32,5 +37,34 @@ package object netty {
         }
         failureMaybe.fold(success)(Pull.fail)
     }
+  }
+
+  def unsafeRunAsyncChannelFuture(ch: Channel, task: Task[Unit]): ChannelFuture = {
+    val promise = new DefaultChannelPromise(ch)
+    task.unsafeRunAsync { cb =>
+      cb.fold(promise.setFailure, _ => promise.setSuccess())
+      ()
+    }
+    promise
+  }
+
+  def fromNettyChannelFuture(fut: => ChannelFuture)(implicit S: Strategy): Task[Channel] = Task.async[Channel] { cb =>
+    fut.addListener(new ChannelFutureListener {
+      def operationComplete(cf: ChannelFuture): Unit = {
+        if (cf.isSuccess) cb(Right(cf.channel)) else cb(Left(cf.cause))
+        ()
+      }
+    })
+    ()
+  }
+
+  def fromNettyFuture[A](fut: => Future[A])(implicit S: Strategy): Task[A] = Task.async[A] { cb =>
+    fut.addListener(new FutureListener[A] {
+      def operationComplete(f: Future[A]): Unit = {
+        if (f.isSuccess) cb(Right(f.getNow)) else cb(Left(f.cause))
+        ()
+      }
+    })
+    ()
   }
 }

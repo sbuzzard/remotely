@@ -25,10 +25,9 @@ import fs2.{Strategy,Stream,Task}
 import java.net.InetSocketAddress
 import java.util.concurrent.{Executors, ThreadFactory}
 import io.netty.util.concurrent.{Future, GenericFutureListener}
-import org.apache.commons.pool2.{BasePooledObjectFactory, PooledObject}
-import org.apache.commons.pool2.impl.{DefaultPooledObject, GenericObjectPool, GenericObjectPoolConfig}
 import io.netty.channel._, socket._
 import io.netty.channel.nio._
+import io.netty.channel.pool._
 import io.netty.bootstrap.Bootstrap
 import io.netty.channel.{Channel, ChannelFuture, ChannelFutureListener,ChannelHandlerContext,SimpleChannelInboundHandler}
 import io.netty.channel.socket.nio.NioSocketChannel
@@ -41,39 +40,43 @@ import scodec.bits.BitVector
 import io.netty.buffer.ByteBuf
 
 object NettyConnectionPool {
-  def default(hosts: Stream[Task,InetSocketAddress],
+  def default(host: InetSocketAddress,
               expectedSigs: Set[Signature] = Set.empty,
               workerThreads: Option[Int] = None,
               monitoring: Monitoring = Monitoring.empty,
-              sslParams: Option[SslParameters],
-              channelPoolConfig: Option[ChannelPoolConfig] = None)(implicit S: Strategy): Task[GenericObjectPool[Channel]] = {
-    SslParameters.toClientContext(sslParams) map { ssl =>
-      val poolConfig = {
-        val gopc = new GenericObjectPoolConfig()
-        channelPoolConfig foreach { cpc =>
-          gopc.setMaxTotal(cpc.maxTotal)
-          gopc.setMaxIdle(cpc.maxIdle)
-          gopc.setMinIdle(cpc.minIdle)
-        }
-        gopc.setTestOnBorrow(true)
-        gopc.setTestOnReturn(true)
-        gopc
-      }
-      new GenericObjectPool[Channel](new NettyConnectionPool(hosts, expectedSigs, workerThreads, monitoring, ssl), poolConfig)
+              sslParams: Option[SslParameters])(implicit S: Strategy): Task[NettyConnectionPool] = {
+    def genWorkerThreadPool = Task.delay(new NioEventLoopGroup(workerThreads getOrElse Runtime.getRuntime.availableProcessors.max(4), namedThreadFactory("nettyWorker")))
+    def genBootstrap(workerThreadPool: NioEventLoopGroup) = Task.delay {
+      val bootstrap = new Bootstrap()
+      bootstrap.option[java.lang.Boolean](ChannelOption.SO_KEEPALIVE, true)
+      bootstrap.group(workerThreadPool)
+      bootstrap.channel(classOf[NioSocketChannel])
+      bootstrap
     }
+    for {
+      workerThreadPool <- genWorkerThreadPool
+      bootstrap <- genBootstrap(workerThreadPool)
+      ssl <- SslParameters.toClientContext(sslParams)
+    } yield new NettyConnectionPool(host, workerThreadPool, bootstrap, expectedSigs, monitoring, ssl)
   }
 }
 
 case class IncompatibleServer(msg: String) extends Throwable(msg)
 
-class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
-                          expectedSigs: Set[Signature],
-                          workerThreads: Option[Int],
-                          M: Monitoring,
-                          sslContext: Option[SslContext])(implicit S: Strategy) extends BasePooledObjectFactory[Channel] {
+class NettyConnectionPoolHandler extends AbstractChannelPoolHandler {
+  override def channelCreated(ch: Channel): Unit = ()
+  override def channelReleased(ch: Channel): Unit = {
+    ch.pipeline.remove(classOf[ClientDeframedHandler])
+    ()
+  }
+}
 
-  val numWorkerThreads = workerThreads getOrElse Runtime.getRuntime.availableProcessors.max(4)
-  val workerThreadPool = new NioEventLoopGroup(numWorkerThreads, namedThreadFactory("nettyWorker"))
+class NettyConnectionPool(host: InetSocketAddress,
+                          val workerThreadPool: NioEventLoopGroup,
+                          bootstrap: Bootstrap,
+                          expectedSigs: Set[Signature],
+                          M: Monitoring,
+                          sslContext: Option[SslContext])(implicit S: Strategy) extends SimpleChannelPool(bootstrap, new NettyConnectionPoolHandler) {
 
   val validateCapabilities: ((Capabilities,Channel)) => Task[Channel] = {
     case (capabilties, channel) =>
@@ -125,9 +128,9 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
     */
   class ClientNegotiateDescription(channel: Channel,
                                    expectedSigs: Set[Signature],
-                                   addr: InetSocketAddress) extends SimpleChannelInboundHandler[Framed] {
+                                   host: InetSocketAddress) extends SimpleChannelInboundHandler[Framed] {
 
-    M.negotiating(Some(addr), "description negotiation begin", None)
+    M.negotiating(Some(host), "description negotiation begin", None)
 
 
     // the callback which will fulfil the valid task
@@ -149,7 +152,7 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
 
       val _ = Xor.catchNonFatal { channel.pipeline().removeLast() }
 
-      M.negotiating(Some(addr), "description", Some(err))
+      M.negotiating(Some(host), "description", Some(err))
       cb(Left(err))
     }
 
@@ -163,7 +166,7 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
     private[this] def success(): Unit = {
       val pipe = channel.pipeline()
       pipe.removeLast()
-      M.negotiating(Some(addr), "description", None)
+      M.negotiating(Some(host), "description", None)
       cb(Right(channel))
     }
 
@@ -172,7 +175,7 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
         case Bits(bv) =>
           bits = bits ++ bv
         case EOS =>
-          M.negotiating(Some(addr), "got end of description response", None)
+          M.negotiating(Some(host), "got end of description response", None)
           val signatureDecoding: Attempt[Unit] = for {
             resp <- codecs.responseDecoder[List[Signature]](codecs.list(Signature.signatureCodec)).complete.decode(bits).map(_.value)
           }  yield resp.fold(e => fail(s"error processing description response: $e"),
@@ -185,8 +188,8 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
                                }
                              })
           signatureDecoding fold (
-            e => M.negotiating(Some(addr), "error processing description", Some(e)),
-            _ => M.negotiating(Some(addr), "finished processing response", None)
+            e => M.negotiating(Some(host), "error processing description", Some(e)),
+            _ => M.negotiating(Some(host), "finished processing response", None)
           )
       }
     }
@@ -207,7 +210,7 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
       bits <- codecs.encodeRequest(Remote.ref[List[Signature]]("describe"), Context.empty).toTask
       _ <- NettyTransport.evalCF(channel.write(Bits(bits)))
       _ <- NettyTransport.evalCF(channel.writeAndFlush(EOS))
-      _ = M.negotiating(Some(addr), "sending describe request", None)
+      _ = M.negotiating(Some(host), "sending describe request", None)
     } yield ()
 
     // actually make the request for the description
@@ -252,90 +255,45 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
     }
   }
 
-  def createTask(expectedSigs: Set[Signature]): Task[Channel] = {
+  override def connectChannel(bs: Bootstrap): ChannelFuture = {
     val negotiateCapable = new ClientNegotiateCapabilities()
-    for {
-      addrMaybe <- runOnceLast(hosts)
-      addr <- addrMaybe.fold[Task[InetSocketAddress]](Task.fail(new Exception("out of connections")))(Task.now(_))
-      _ = M.negotiating(Some(addr), "address selected", None)
-      fut <- {
-        Task.delay {
+    val chanFut = {
+      val init = new ChannelInitializer[SocketChannel] {
+        def initChannel(ch: SocketChannel): Unit = {
 
-          // assign this to a val so we can throw it away later, wreckx-n-effect
-          val bootstrap = new Bootstrap()
+          val pipe = ch.pipeline
 
-          val o = bootstrap.option[java.lang.Boolean](ChannelOption.SO_KEEPALIVE, true)
-          val g = bootstrap.group(workerThreadPool)
-          val c = bootstrap.channel(classOf[NioSocketChannel])
+          // add an SSL layer first iff we were constructed with an SslContext, foreach like a unit boss
 
-          val init = new ChannelInitializer[SocketChannel] {
+          sslContext.foreach { s =>
 
-            def initChannel(ch: SocketChannel): Unit = {
+            val sh = s.newHandler(ch.alloc(), host.getAddress.getHostAddress, host.getPort)
 
-              val pipe = ch.pipeline
-
-              // add an SSL layer first iff we were constructed with an SslContext, foreach like a unit boss
-
-              sslContext.foreach { s =>
-
-                val sh = s.newHandler(ch.alloc(), addr.getAddress.getHostAddress, addr.getPort)
-
-                sh.handshakeFuture().addListener(new GenericFutureListener[Future[Channel]] {
-                  def operationComplete(future: Future[Channel]): Unit = {
-                    // avoid negotiation when ssl fails
-                    if(!future.isSuccess) pipe.remove(negotiateCapable)
-                    ()
-                  }
-                })
-
-                pipe.addLast(sh)
+            sh.handshakeFuture().addListener(new GenericFutureListener[Future[Channel]] {
+              def operationComplete(future: Future[Channel]): Unit = {
+                // avoid negotiation when ssl fails
+                if(!future.isSuccess) pipe.remove(negotiateCapable)
+                ()
               }
-
-              val effect = pipe.addLast(negotiateCapable)
-            }
+            })
+            pipe.addLast(sh)
           }
-
-          val h = bootstrap.handler(init)
-          bootstrap.connect(addr)
-      }}
-      chan <- {
-        Task.unforkedAsync[Channel] { cb =>
-          val _ = fut.addListener(new ChannelFutureListener {
-                            def operationComplete(cf: ChannelFuture): Unit = {
-                              if(cf.isSuccess) {
-                                cb(Right(cf.channel))
-                              } else {
-                                cb(Left(cf.cause))
-                              }
-                            }
-                          })
+          val effect = pipe.addLast(negotiateCapable)
         }
       }
-      _ = M.negotiating(Some(addr), "channel selected", None)
+      val h = bs.handler(init)
+      bs.connect(host)
+    }
+    val task = for {
+      chan <- fromNettyChannelFuture(chanFut)
+      _ = M.negotiating(Some(host), "channel selected", None)
       capable <- negotiateCapable.capabilities
-      _ = M.negotiating(Some(addr), "capabilities received", None)
-      c1 <- validateCapabilities(capable)
-      _ = M.negotiating(Some(addr), "capabilities valid", None)
-      c2 <- if(expectedSigs.isEmpty) Task.now(c1) else new ClientNegotiateDescription(c1,expectedSigs, addr).valid
-      _ = M.negotiating(Some(addr), "description valid", None)
-    } yield c2
-  }
-
-  override def create: Channel = createTask(expectedSigs).async(S).unsafeRun
-
-  override def wrap(c: Channel): PooledObject[Channel] = new DefaultPooledObject(c)
-
-  override def passivateObject(c: PooledObject[Channel]): Unit = {
-    Xor.catchNonFatal { c.getObject.pipeline.remove(classOf[ClientDeframedHandler]) }
-    ()
-  }
-
-  override def validateObject(c: PooledObject[Channel]): Boolean = c.getObject.isOpen
-
-  override def destroyObject(c: PooledObject[Channel]): Unit = {
-    val channel = c.getObject
-    Xor.catchNonFatal { c.getObject.pipeline.remove(classOf[ClientDeframedHandler]) }
-    Xor.catchNonFatal { if (channel.isOpen) channel.close }
-    ()
+      _ = M.negotiating(Some(host), "capabilities received", None)
+      _ <- validateCapabilities(capable)
+      _ = M.negotiating(Some(host), "capabilities valid", None)
+      _ <- if (expectedSigs.isEmpty) Task.now(chan) else new ClientNegotiateDescription(chan, expectedSigs, host).valid
+      _ = M.negotiating(Some(host), "description valid", None)
+    } yield ()
+    unsafeRunAsyncChannelFuture(chanFut.channel, task)
   }
 }

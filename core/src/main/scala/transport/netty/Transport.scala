@@ -27,7 +27,6 @@ import io.netty.channel._
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
-import org.apache.commons.pool2.ObjectPool
 import io.netty.handler.codec.ByteToMessageDecoder
 import javax.net.ssl.{TrustManagerFactory,CertPathTrustManagerParameters}
 import java.security.KeyStore
