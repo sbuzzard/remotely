@@ -55,6 +55,8 @@ object NettyConnectionPool {
           gopc.setMaxIdle(cpc.maxIdle)
           gopc.setMinIdle(cpc.minIdle)
         }
+        gopc.setTestOnBorrow(true)
+        gopc.setTestOnReturn(true)
         gopc
       }
       new GenericObjectPool[Channel](new NettyConnectionPool(hosts, expectedSigs, workerThreads, monitoring, ssl), poolConfig)
@@ -324,6 +326,16 @@ class NettyConnectionPool(hosts: Stream[Task,InetSocketAddress],
   override def wrap(c: Channel): PooledObject[Channel] = new DefaultPooledObject(c)
 
   override def passivateObject(c: PooledObject[Channel]): Unit = {
-    val _ = c.getObject().pipeline().remove(classOf[ClientDeframedHandler])
+    Xor.catchNonFatal { c.getObject.pipeline.remove(classOf[ClientDeframedHandler]) }
+    ()
+  }
+
+  override def validateObject(c: PooledObject[Channel]): Boolean = c.getObject.isOpen
+
+  override def destroyObject(c: PooledObject[Channel]): Unit = {
+    val channel = c.getObject
+    Xor.catchNonFatal { c.getObject.pipeline.remove(classOf[ClientDeframedHandler]) }
+    Xor.catchNonFatal { if (channel.isOpen) channel.close }
+    ()
   }
 }
