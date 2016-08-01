@@ -232,9 +232,9 @@ class NettyConnectionPool(host: InetSocketAddress,
     // callback which fulfills the capabilities Task
     @volatile private[this] var cb: Either[Throwable, (Capabilities,Channel)] => Unit = Function.const(())
 
-    val capabilities: Task[(Capabilities,Channel)] = Task.unforkedAsync[(Capabilities, Channel)] { cb =>
+    val setNegotiateCapableCallback: Task[Task[(Capabilities,Channel)]] = Task.start(Task.unforkedAsync[(Capabilities, Channel)] { cb =>
       this.cb = cb
-    }
+    })
 
     override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
       ee.printStackTrace()
@@ -257,7 +257,7 @@ class NettyConnectionPool(host: InetSocketAddress,
 
   override def connectChannel(bs: Bootstrap): ChannelFuture = {
     val negotiateCapable = new ClientNegotiateCapabilities()
-    val chanFut = {
+    val triggerCapabilitiesNegotiation = {
       val init = new ChannelInitializer[SocketChannel] {
         def initChannel(ch: SocketChannel): Unit = {
 
@@ -285,15 +285,16 @@ class NettyConnectionPool(host: InetSocketAddress,
       bs.connect(host)
     }
     val task = for {
-      chan <- fromNettyChannelFuture(chanFut)
+      negotiateCapableCallback <- negotiateCapable.setNegotiateCapableCallback
+      chan <- fromNettyChannelFuture(triggerCapabilitiesNegotiation)
       _ = M.negotiating(Some(host), "channel selected", None)
-      capable <- negotiateCapable.capabilities
+      capable <- negotiateCapableCallback
       _ = M.negotiating(Some(host), "capabilities received", None)
       _ <- validateCapabilities(capable)
       _ = M.negotiating(Some(host), "capabilities valid", None)
       _ <- if (expectedSigs.isEmpty) Task.now(chan) else new ClientNegotiateDescription(chan, expectedSigs, host).valid
       _ = M.negotiating(Some(host), "description valid", None)
     } yield ()
-    unsafeRunAsyncChannelFuture(chanFut.channel, task)
+    unsafeRunAsyncChannelFuture(triggerCapabilitiesNegotiation.channel, task)
   }
 }

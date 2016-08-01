@@ -1,1 +1,1 @@
-version in ThisBuild := "2.0.0-ccad-20160801"
+version in ThisBuild := "2.0.0-ccad-20160801-1"
