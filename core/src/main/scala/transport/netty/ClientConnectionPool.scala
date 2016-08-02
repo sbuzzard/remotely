@@ -33,8 +33,10 @@ import io.netty.channel.{Channel, ChannelFuture, ChannelFutureListener,ChannelHa
 import io.netty.channel.socket.nio.NioSocketChannel
 import io.netty.handler.codec.{Delimiters,DelimiterBasedFrameDecoder}
 import io.netty.handler.ssl.SslContext
+import io.netty.handler.timeout._
 import remotely.utils._
 import remotely.Response.Context
+import scala.concurrent.duration._
 import scodec.{Attempt, Err}
 import scodec.bits.BitVector
 import io.netty.buffer.ByteBuf
@@ -44,7 +46,8 @@ object NettyConnectionPool {
               expectedSigs: Set[Signature] = Set.empty,
               workerThreads: Option[Int] = None,
               monitoring: Monitoring = Monitoring.empty,
-              sslParams: Option[SslParameters])(implicit S: Strategy): Task[NettyConnectionPool] = {
+              sslParams: Option[SslParameters],
+              idleChannelTimeout: Option[FiniteDuration] = None)(implicit S: Strategy): Task[NettyConnectionPool] = {
     def genWorkerThreadPool = Task.delay(new NioEventLoopGroup(workerThreads getOrElse Runtime.getRuntime.availableProcessors.max(4), namedThreadFactory("nettyWorker")))
     def genBootstrap(workerThreadPool: NioEventLoopGroup) = Task.delay {
       val bootstrap = new Bootstrap()
@@ -57,7 +60,7 @@ object NettyConnectionPool {
       workerThreadPool <- genWorkerThreadPool
       bootstrap <- genBootstrap(workerThreadPool)
       ssl <- SslParameters.toClientContext(sslParams)
-    } yield new NettyConnectionPool(host, workerThreadPool, bootstrap, expectedSigs, monitoring, ssl)
+    } yield new NettyConnectionPool(host, workerThreadPool, bootstrap, expectedSigs, monitoring, ssl, idleChannelTimeout)
   }
 }
 
@@ -71,12 +74,23 @@ class NettyConnectionPoolHandler extends AbstractChannelPoolHandler {
   }
 }
 
+class CloseOnIdleStateHandler extends ChannelDuplexHandler {
+  override def userEventTriggered(ctx: ChannelHandlerContext, evt: Object): Unit = {
+    evt match {
+      case ise: IdleStateEvent if ise.state == IdleState.ALL_IDLE => ctx.close()
+      case _ => ()
+    }
+    ()
+  }
+}
+
 class NettyConnectionPool(host: InetSocketAddress,
-                          val workerThreadPool: NioEventLoopGroup,
-                          bootstrap: Bootstrap,
-                          expectedSigs: Set[Signature],
-                          M: Monitoring,
-                          sslContext: Option[SslContext])(implicit S: Strategy) extends SimpleChannelPool(bootstrap, new NettyConnectionPoolHandler) {
+  val workerThreadPool: NioEventLoopGroup,
+  bootstrap: Bootstrap,
+  expectedSigs: Set[Signature],
+  M: Monitoring,
+  sslContext: Option[SslContext],
+  idleChannelTimeout: Option[FiniteDuration] = None)(implicit S: Strategy) extends SimpleChannelPool(bootstrap, new NettyConnectionPoolHandler) {
 
   val validateCapabilities: ((Capabilities,Channel)) => Task[Channel] = {
     case (capabilties, channel) =>
@@ -278,17 +292,25 @@ class NettyConnectionPool(host: InetSocketAddress,
             })
             pipe.addLast(sh)
           }
-          val effect = pipe.addLast(negotiateCapable)
+          pipe.addLast(negotiateCapable)
+          ()
         }
       }
       val h = bs.handler(init)
       bs.connect(host)
+    }
+    def addChannelIdleHandler(ch: Channel): Task[Unit] = Task.delay {
+      idleChannelTimeout foreach { timeout =>
+        ch.pipeline().addLast("idleStateHandler", new IdleStateHandler(0, 0, timeout.toMillis, MILLISECONDS))
+        ch.pipeline().addLast("closeOnIdleStateHandler", new CloseOnIdleStateHandler)
+      }
     }
     val task = for {
       negotiateCapableCallback <- negotiateCapable.setNegotiateCapableCallback
       chan <- fromNettyChannelFuture(triggerCapabilitiesNegotiation)
       _ = M.negotiating(Some(host), "channel selected", None)
       capable <- negotiateCapableCallback
+      _ <- addChannelIdleHandler(chan)
       _ = M.negotiating(Some(host), "capabilities received", None)
       _ <- validateCapabilities(capable)
       _ = M.negotiating(Some(host), "capabilities valid", None)

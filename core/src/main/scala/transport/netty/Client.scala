@@ -25,6 +25,7 @@ import fs2.{async,pipe,Strategy,Stream,Task}
 import java.net.InetSocketAddress
 import io.netty.channel.{Channel,ChannelFuture,ChannelHandlerContext,ChannelFutureListener}
 import io.netty.channel.pool.ChannelPool
+import scala.concurrent.duration.FiniteDuration
 import scodec.bits.BitVector
 
 class NettyTransport(val pool: NettyConnectionPool)(implicit S: Strategy) extends Handler {
@@ -70,6 +71,7 @@ object NettyTransport {
              expectedSigs: Set[Signature] = Set.empty,
              workerThreads: Option[Int] = None,
              monitoring: Monitoring = Monitoring.empty,
-             sslParams: Option[SslParameters] = None)(implicit S: Strategy): Task[NettyTransport] =
-    NettyConnectionPool.default(host, expectedSigs, workerThreads, monitoring, sslParams).map(new NettyTransport(_))
+             sslParams: Option[SslParameters] = None,
+             idleChannelTimeout: Option[FiniteDuration] = None)(implicit S: Strategy): Task[NettyTransport] =
+    NettyConnectionPool.default(host, expectedSigs, workerThreads, monitoring, sslParams, idleChannelTimeout).map(new NettyTransport(_))
 }
