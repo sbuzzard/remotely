@@ -241,18 +241,24 @@ class NettyConnectionPool(host: InetSocketAddress,
     * with the ClientNegotiateDescription handler to do the next part
     * of the negotiation.
     */
-  class ClientNegotiateCapabilities extends DelimiterBasedFrameDecoder(1000,Delimiters.lineDelimiter():_*) {
 
-    // callback which fulfills the capabilities Task
-    @volatile private[this] var cb: Either[Throwable, (Capabilities,Channel)] => Unit = Function.const(())
+  class ClientNegotiateCapabilities extends DelimiterBasedFrameDecoder(1000,Delimiters.lineDelimiter():_*) {
+    class SynchronizedCallback {
+      private var proxy: Option[Either[Throwable, (Capabilities, Channel)] => Unit] = None
+      private var result: Option[Either[Throwable, (Capabilities, Channel)]] = None
+      def setResult(result: Either[Throwable, (Capabilities,Channel)]): Unit = synchronized { this.proxy.fold(this.result = Some(result))(_(result)) }
+      def setProxy(proxy: Either[Throwable, (Capabilities,Channel)] => Unit): Unit = synchronized { this.result.fold(this.proxy = Some(proxy))(proxy(_)) }
+    }
+
+    private val callback: SynchronizedCallback = new SynchronizedCallback
 
     val setNegotiateCapableCallback: Task[Task[(Capabilities,Channel)]] = Task.start(Task.unforkedAsync[(Capabilities, Channel)] { cb =>
-      this.cb = cb
+      callback.setProxy(cb)
     })
 
     override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
       ee.printStackTrace()
-      cb(Left(ee))
+      callback.setResult(Left(ee))
     }
 
     override def decode(ctx: ChannelHandlerContext, buffer: ByteBuf): Object = {
@@ -264,7 +270,7 @@ class NettyConnectionPool(host: InetSocketAddress,
         (e: Err) => new IllegalArgumentException(e.message),
         (cap: Capabilities) => (cap,ctx.channel)
       )
-      cb(r.toEither)
+      callback.setResult(r.toEither)
       r
     }
   }
@@ -274,7 +280,6 @@ class NettyConnectionPool(host: InetSocketAddress,
     val triggerCapabilitiesNegotiation = {
       val init = new ChannelInitializer[SocketChannel] {
         def initChannel(ch: SocketChannel): Unit = {
-
           val pipe = ch.pipeline
 
           // add an SSL layer first iff we were constructed with an SslContext, foreach like a unit boss
@@ -310,12 +315,12 @@ class NettyConnectionPool(host: InetSocketAddress,
       chan <- fromNettyChannelFuture(triggerCapabilitiesNegotiation)
       _ = M.negotiating(Some(host), "channel selected", None)
       capable <- negotiateCapableCallback
-      _ <- addChannelIdleHandler(chan)
       _ = M.negotiating(Some(host), "capabilities received", None)
       _ <- validateCapabilities(capable)
       _ = M.negotiating(Some(host), "capabilities valid", None)
       _ <- if (expectedSigs.isEmpty) Task.now(chan) else new ClientNegotiateDescription(chan, expectedSigs, host).valid
       _ = M.negotiating(Some(host), "description valid", None)
+      _ <- addChannelIdleHandler(chan)
     } yield ()
     unsafeRunAsyncChannelFuture(triggerCapabilitiesNegotiation.channel, task)
   }
