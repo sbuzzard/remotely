@@ -28,6 +28,8 @@ import javax.net.ssl.SSLEngine
 import scodec.bits.BitVector
 import scala.concurrent.duration._
 
+import natural.eq._
+
 /**
  * A 'logical' endpoint for some service, represented
  * by a possibly rotating stream of `Transport`s.
@@ -93,7 +95,7 @@ object Endpoint {
       b <- Stream.eval(isEmpty(xs))
       r <- if (b) Stream.emit(xs) else for {
         x <- xs
-        ps <- permutations(xs through pipe.delete { case (i, v) => i == x._1 })
+        ps <- permutations(xs through pipe.delete { case (i, v) => i === x._1 })
       } yield Stream.emit(x) ++ ps
     } yield r.map(_._2)
   }

@@ -36,6 +36,8 @@ import scala.collection.JavaConverters._
 
 import scodec.bits.ByteVector
 
+import natural.eq._
+
 // what are all the configurations we want to support:
 //
 //  1. everything plaintext
@@ -123,7 +125,7 @@ object SslParameters {
     _ <- SSL.certFromPEM(Paths.get(caBundle.getPath)).flatMap {
       case cert: X509Certificate =>
         val name = cert.getSubjectDN.getName
-        if (cert.getBasicConstraints != -1) trustSet.add(new TrustAnchor(cert, null))
+        if (cert.getBasicConstraints =!= -1) trustSet.add(new TrustAnchor(cert, null))
         Stream.eval(SSL.addCert(cert, name, SSL.emptyKeystore))
       case cert =>
         Stream.fail(new IllegalArgumentException("unexpected cert which is not x509"))

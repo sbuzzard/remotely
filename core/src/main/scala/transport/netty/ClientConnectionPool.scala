@@ -19,27 +19,30 @@ package remotely
 package transport.netty
 
 import cats.data.Xor
+import cats.implicits._
 
 import fs2.{Strategy,Stream,Task}
 
 import java.net.InetSocketAddress
 import java.util.concurrent.{Executors, ThreadFactory}
-import io.netty.util.concurrent.{Future, GenericFutureListener}
+import io.netty.bootstrap.Bootstrap
+import io.netty.buffer.ByteBuf
 import io.netty.channel._, socket._
 import io.netty.channel.nio._
 import io.netty.channel.pool._
-import io.netty.bootstrap.Bootstrap
 import io.netty.channel.{Channel, ChannelFuture, ChannelFutureListener,ChannelHandlerContext,SimpleChannelInboundHandler}
 import io.netty.channel.socket.nio.NioSocketChannel
 import io.netty.handler.codec.{Delimiters,DelimiterBasedFrameDecoder}
 import io.netty.handler.ssl.SslContext
 import io.netty.handler.timeout._
+import io.netty.util.concurrent.{Future, GenericFutureListener}
 import remotely.utils._
 import remotely.Response.Context
 import scala.concurrent.duration._
 import scodec.{Attempt, Err}
 import scodec.bits.BitVector
-import io.netty.buffer.ByteBuf
+
+import natural.eq._
 
 object NettyConnectionPool {
   def default(host: InetSocketAddress,
@@ -69,7 +72,8 @@ case class IncompatibleServer(msg: String) extends Throwable(msg)
 class NettyConnectionPoolHandler extends AbstractChannelPoolHandler {
   override def channelCreated(ch: Channel): Unit = ()
   override def channelReleased(ch: Channel): Unit = {
-    ch.pipeline.remove(classOf[ClientDeframedHandler])
+    val deframedHandlerClass = classOf[ClientDeframedHandler]
+    if (Option(ch.pipeline.get(deframedHandlerClass)).isDefined) ch.pipeline.remove(deframedHandlerClass)
     ()
   }
 }
@@ -77,9 +81,16 @@ class NettyConnectionPoolHandler extends AbstractChannelPoolHandler {
 class CloseOnIdleStateHandler extends ChannelDuplexHandler {
   override def userEventTriggered(ctx: ChannelHandlerContext, evt: Object): Unit = {
     evt match {
-      case ise: IdleStateEvent if ise.state == IdleState.ALL_IDLE => ctx.close()
-      case _ => ()
+      case ise: IdleStateEvent if ise.state === IdleState.ALL_IDLE =>
+        Xor.catchNonFatal(ctx.close())
+        ()
+      case _ =>
+        ()
     }
+    ()
+  }
+  override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
+    if (ctx.pipeline.last === this) Xor.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
     ()
   }
 }
@@ -208,7 +219,6 @@ class NettyConnectionPool(host: InetSocketAddress,
       }
     }
 
-
     private[this] val pipe = channel.pipeline()
     pipe.addLast("negotiateDescription", this)
 
@@ -320,7 +330,6 @@ class NettyConnectionPool(host: InetSocketAddress,
       _ = M.negotiating(Some(host), "capabilities valid", None)
       _ <- if (expectedSigs.isEmpty) Task.now(chan) else new ClientNegotiateDescription(chan, expectedSigs, host).valid
       _ = M.negotiating(Some(host), "description valid", None)
-      _ <- addChannelIdleHandler(chan)
     } yield ()
     unsafeRunAsyncChannelFuture(triggerCapabilitiesNegotiation.channel, task)
   }

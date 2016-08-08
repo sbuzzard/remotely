@@ -31,6 +31,8 @@ import scala.util.{Success,Failure}
 
 import Response.Context
 
+import natural.eq._
+
 /** The result type for a remote computation. */
 sealed trait Response[+A] {
   def apply(c: Context): Task[A]
@@ -163,7 +165,7 @@ object Response {
     override def hashCode = get.hashCode
     override def toString = get.toString
     override def equals(a: Any) = a match {
-      case id: ID => id.get == get
+      case id: ID => id.get === get
       case _ => false
     }
   }

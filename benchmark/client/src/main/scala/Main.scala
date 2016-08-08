@@ -36,6 +36,8 @@ import remotely.transport.netty._
 import scodec.Codec
 import remotely.example.benchmark.protocol._
 
+import natural.eq._
+
 case class Result(success: Int,
                    failure: Int,
                    successTime: Long,
@@ -44,7 +46,7 @@ case class Result(success: Int,
                    failureTime: Long,
                   failures: Map[String,Int]) {
 
-  def meanResponse = if(success == 0) 0 else successTime / success
+  def meanResponse = if(success === 0) 0 else successTime / success
 
   override def toString =
     s"OK: $success, KO: $failure, minResponse: ${successTimeMin}ns, meanResponse: ${meanResponse}ns maxResponse: ${successTimeMax}ns\nErrors: " + failures.map{ case (k,v) => s"    $k -> $v" }

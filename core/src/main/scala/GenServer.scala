@@ -17,8 +17,12 @@
 
 package remotely
 
+import cats.implicits._
+
 import scala.language.experimental.macros
 import scala.annotation.StaticAnnotation
+
+import natural.eq._
 
 /**
  * Macro annotation that generates a server interface. Usage:
@@ -61,7 +65,7 @@ object GenServer extends MacrosCompatibility {
     }
 
     // Generates the method defs for the generated class.
-    val sigDefs = signatures.collect { case (n,t) if n != "describe" =>
+    val sigDefs = signatures.collect { case (n,t) if n =!= "describe" =>
       genSig(n, t)
     }
 
@@ -87,7 +91,7 @@ object GenServer extends MacrosCompatibility {
 
               ..$sigDefs
 
-              def describe: Response[List[Signature]] = 
+              def describe: Response[List[Signature]] =
                 Response.delay(${p.signatures.signatures.foldLeft[Tree](q"List.empty[Signature]")((e,s) => q"$e.::(${Gen.liftSignature(c)(s)})")})
 
 

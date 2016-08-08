@@ -15,7 +15,10 @@
 //:
 //: ----------------------------------------------------------------------------
 
-package remotely.transport
+package remotely
+package transport
+
+import cats.implicits._
 
 import fs2._
 
@@ -25,6 +28,8 @@ import _root_.io.netty.util.concurrent._
 
 import scala.language.higherKinds
 
+import natural.eq._
+
 package object netty {
 
   def unLeftFail[F[_], I]: Stream[F, Either[Throwable, I]] => Stream[F, I] = _ repeatPull {
@@ -33,7 +38,7 @@ package object netty {
         val failureMaybe = hd.toVector.collectFirst { case Left(t) => t }
         def success = {
           val out = Chunk.indexedSeq(hd.toVector.collect { case Right(i) => i })
-          if (out.size == hd.size) Pull.output(out) as tl else if (out.isEmpty) Pull.done else Pull.output(out) >> Pull.done
+          if (out.size === hd.size) Pull.output(out) as tl else if (out.isEmpty) Pull.done else Pull.output(out) >> Pull.done
         }
         failureMaybe.fold(success)(Pull.fail)
     }

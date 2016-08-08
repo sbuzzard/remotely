@@ -27,6 +27,8 @@ import org.scalacheck._
 import Prop._
 import scala.concurrent.{ExecutionContext,Future}
 
+import natural.eq._
+
 object ResponseSpec extends Properties("Response") {
 
   property("stack safety") = {
@@ -45,9 +47,9 @@ object ResponseSpec extends Properties("Response") {
     val ctx = Response.Context.empty
     val expected = (0 until N).sum
 
-    leftFold(responses)(ctx).unsafeRun == expected &&
-    rightFold(responses)(ctx).unsafeRun == expected &&
-    leftFold(responses2)(ctx).unsafeRun == expected &&
-    rightFold(responses2)(ctx).unsafeRun == expected
+    leftFold(responses)(ctx).unsafeRun === expected &&
+    rightFold(responses)(ctx).unsafeRun === expected &&
+    leftFold(responses2)(ctx).unsafeRun === expected &&
+    rightFold(responses2)(ctx).unsafeRun === expected
   }
 }

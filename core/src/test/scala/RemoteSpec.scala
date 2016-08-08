@@ -17,12 +17,16 @@
 
 package remotely
 
+import cats.implicits._
+
 import fs2.{ Strategy, Task }
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import org.scalacheck._
 import Prop._
 import transport.netty._
+
+import natural.eq._
 
 object RemoteSpec extends Properties("Remote") {
   import codecs._
@@ -61,17 +65,17 @@ object RemoteSpec extends Properties("Remote") {
 
   property("roundtrip") =
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.sum == sum(l).runWithoutContext(loc).unsafeRun
+      l.sum === sum(l).runWithoutContext(loc).unsafeRun
     }
 
   property("roundtrip[Double]") =
     forAll { (l: List[Double], kvs: Map[String,String]) =>
-      l.sum == sumD(l).runWithContext(loc, ctx ++ kvs).unsafeRun
+      l.sum === sumD(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
 
   property("roundtrip[List[Int]]") =
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.map(_ + 1) == mapI(l).runWithContext(loc, ctx ++ kvs).unsafeRun
+      l.map(_ + 1) === mapI(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
 
   property("check-serializers") = secure {
@@ -106,7 +110,7 @@ object RemoteSpec extends Properties("Remote") {
 
   property("add3") =
     forAll { (one: Int, two: Int, three: Int) =>
-      add3(one, two, three).runWithoutContext(loc).unsafeRun == (one + two + three)
+      add3(one, two, three).runWithoutContext(loc).unsafeRun === (one + two + three)
     }
 /* These take forever on travis, and so I'm disabling them, we should leave benchmarking of scodec to scodec and handle benchmarking of remotely in the benchmarking sub-projects
 

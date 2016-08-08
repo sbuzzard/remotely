@@ -18,6 +18,8 @@
 package remotely
 package test
 
+import cats.implicits._
+
 import org.scalacheck._
 import Arbitrary._
 import org.scalacheck.Prop.forAll
@@ -25,10 +27,12 @@ import remotely.codecs._
 import scodec.{DecodeResult, Attempt}
 import scodec.bits.BitVector
 
+import natural.eq._
+
 object TupleCodecSpec extends Properties("TupleCodec") {
   property("tupele2Codec works") = forAll {ab: (String,List[Int]) ⇒
     val abCodec = utf8 ~~ list(int32)
     val roundTripped = abCodec.encode(ab) flatMap abCodec.decode
-    roundTripped == Attempt.successful(DecodeResult(ab, BitVector.empty))
+    roundTripped === Attempt.successful(DecodeResult(ab, BitVector.empty))
   }
 }

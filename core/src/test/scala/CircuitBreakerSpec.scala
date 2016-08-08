@@ -27,6 +27,8 @@ import org.scalacheck._
 import Prop._
 import scala.concurrent.duration._
 
+import natural.eq._
+
 object CircuitBreakerSpec extends Properties("CircuitBreaker") {
 
   implicit val S: Strategy = Strategy.fromCachedDaemonPool()
@@ -42,7 +44,7 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
     val n = x.abs
     val p = failures(n + 1, CircuitBreaker(3.seconds, n))
     p.unsafeRun match {
-      case Left(e) => e.getMessage == "oops"
+      case Left(e) => e.getMessage === "oops"
       case _ => false
     }
   }
@@ -69,7 +71,7 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
       // The breaker should have plenty of time to close
       Task(Thread.sleep(2))
     )).map(_ => 0)
-    p.unsafeAttemptRun.fold(_ => false, _ == 0)
+    p.unsafeAttemptRun.fold(_ => false, _ === 0)
   }
 
   // The CB doesn't open as long as there are successes
@@ -80,7 +82,7 @@ object CircuitBreakerSpec extends Properties("CircuitBreaker") {
       cb(Task.now(0)),
       cb(Task.fail(new Error("oops"))).attempt
     )).map(_ => 1)
-    p.unsafeAttemptRun.fold(_ => false, _ == 1)
+    p.unsafeAttemptRun.fold(_ => false, _ === 1)
   }
 
 }

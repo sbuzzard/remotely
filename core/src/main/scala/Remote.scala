@@ -17,6 +17,8 @@
 
 package remotely
 
+import cats.implicits._
+
 import fs2.Task
 
 import scala.collection.immutable.SortedSet
@@ -25,6 +27,8 @@ import scala.reflect.runtime.universe.TypeTag
 import scodec.{Codec,Decoder,Encoder}
 import scodec.bits.BitVector
 import shapeless._
+
+import natural.eq._
 
 /**
  * Represents a remote computation which yields a
@@ -103,7 +107,7 @@ object Remote {
    * Reference to a remote value on the server.
    */
   private[remotely] case class Ref[A](name: String) extends Remote[A] {
-    override def toString = name.takeWhile(_ != ':')
+    override def toString = name.takeWhile(_ =!= ':')
   }
 
   // we require a separate constructor for each function

@@ -18,6 +18,9 @@
 package remotely
 package transport.netty
 
+import cats.data.Xor
+import cats.implicits._
+
 import fs2.{async,Strategy,Task}
 
 import java.net.InetSocketAddress
@@ -33,6 +36,8 @@ import java.security.KeyStore
 import java.io.FileInputStream
 import scodec.Err
 import scodec.bits.BitVector
+
+import natural.eq._
 
 ///////////////////////////////////////////////////////////////////////////
 // A Netty based transport for remotely.
@@ -119,7 +124,7 @@ class Deframe extends ByteToMessageDecoder {
         // the number of bytes in the upcoming frame
         if (in.readableBytes() >= 4) {
           val rem = in.readInt()
-          if(rem == 0) {
+          if(rem === 0) {
             val _ = out.add(EOS)
           } else {
             remaining = Some(rem)
@@ -136,6 +141,10 @@ class Deframe extends ByteToMessageDecoder {
           val _ = out.add(Bits(bits))
         }
     }
+  }
+  override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
+    if (ctx.pipeline.last === this) Xor.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
+    ()
   }
 }
 
