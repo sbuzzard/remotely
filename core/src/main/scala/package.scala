@@ -105,7 +105,7 @@ package object remotely {
   def runLast[F[_]: Fs2Functor: Catchable, A](s: Stream[F, A]): F[Option[A]] = s.runLog.map(_.lastOption)
   def runOnceLast[F[_]: Fs2Functor: Catchable, A](s: Stream[F, A]): F[Option[A]] = runLast(once(s))
   def iterate[A](start: A)(f: A => A): Stream[Pure, A] = Stream.emit(start) ++ iterate(f(start))(f)
-  def echo1[A]: Pipe[Pure, A, A] = _.pull(Pull.echo1)
+  def echo1[A]: Pipe[Pure, A, A] = _.pull(_.echo1)
 
   private[remotely] def fullyRead(s: Stream[Task,BitVector]): Task[BitVector] = s.runFold(BitVector.empty)((a, b) => a ++ b)
 

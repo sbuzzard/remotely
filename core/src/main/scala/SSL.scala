@@ -69,18 +69,18 @@ object SSL {
     certs.through(pipe.zipWithIndex).runFold { M.empty } { case (t, (c, i)) => M.combine(t, addCert(c,name+i,ks)) }.map { _ => ks }
 
   private[remotely] def stripCruftFromPEM(withHeaders: Boolean): Pipe[Pure, String, String] = {
-    def goBeginning: Stream.Handle[Pure, String] => Pull[Pure, String, Stream.Handle[Pure, String]] = Pull.receive1Option {
-      case Some(str #: h) =>
+    def goBeginning(h: Handle[Pure, String]): Pull[Pure, String, Handle[Pure, String]] = h.receive1Option {
+      case Some((str, h1)) =>
         if (str startsWith "-----BEGIN") {
-          if (withHeaders) Pull.output1(str + "\n") >> goEnd(h) else goEnd(h)
-        } else goBeginning(h)
+          if (withHeaders) Pull.output1(str + "\n") >> goEnd(h1) else goEnd(h1)
+        } else goBeginning(h1)
       case None => Pull.done
     }
-    def goEnd: Stream.Handle[Pure, String] => Pull[Pure, String, Stream.Handle[Pure, String]] = Pull.receive1Option {
-      case Some(str #: h) =>
+    def goEnd(h: Handle[Pure, String]): Pull[Pure, String, Handle[Pure, String]] = h.receive1Option {
+      case Some((str, h1)) =>
         if(str startsWith "-----END") {
-          if (withHeaders) Pull.output1(str + "\n") >> goBeginning(h) else goBeginning(h)
-        } else Pull.output1(str + (if (withHeaders) "\n" else "")) >> goEnd(h)
+          if (withHeaders) Pull.output1(str + "\n") >> goBeginning(h1) else goBeginning(h1)
+        } else Pull.output1(str + (if (withHeaders) "\n" else "")) >> goEnd(h1)
       case None => Pull.fail(new IllegalArgumentException("Not a valid KEY, didn't find END marker"))
     }
     _ pull goBeginning
