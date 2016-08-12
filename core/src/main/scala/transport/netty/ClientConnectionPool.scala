@@ -101,7 +101,12 @@ class NettyConnectionPool(host: InetSocketAddress,
   expectedSigs: Set[Signature],
   M: Monitoring,
   sslContext: Option[SslContext],
-  idleChannelTimeout: Option[FiniteDuration] = None)(implicit S: Strategy) extends SimpleChannelPool(bootstrap, new NettyConnectionPoolHandler) {
+  idleChannelTimeout: Option[FiniteDuration] = None)(implicit S: Strategy) extends SimpleChannelPool(
+    bootstrap,
+    new NettyConnectionPoolHandler,
+    ChannelHealthChecker.ACTIVE,
+    false
+  ) {
 
   val validateCapabilities: ((Capabilities,Channel)) => Task[Channel] = {
     case (capabilties, channel) =>
