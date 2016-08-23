@@ -56,6 +56,7 @@ package object codecs extends lowerprioritycodecs {
   implicit val scodecDecoderMonadInstance: Monad[Decoder] = new Monad[Decoder] {
     def pure[A](a: A) = Decoder.point(a)
     def flatMap[A, B](fa: Decoder[A])(f: A => Decoder[B]) = fa flatMap f
+    def tailRecM[A, B](a: A)(f: A => Decoder[Either[A, B]]): Decoder[B] = defaultTailRecM(a)(f)
   }
 
   implicit def tuple2[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Lazy[Codec[(A,B)]] =
