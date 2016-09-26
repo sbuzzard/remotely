@@ -99,7 +99,7 @@ object Response {
 
   /** Gather the results of multiple responses in parallel, preserving the order of the results. */
   def gather[A](rs: Seq[Response[A]])(implicit S: Strategy): Response[List[A]] =
-    implicitly[Async[Response]].parallelTraverse(rs)(identity) map { _.toList }
+    implicitly[Async[Response]].parallelTraverse(rs.toList)(identity)
 
   /** Fail with the given `Throwable`. */
   def fail(err: Throwable): Response[Nothing] = Response { _ => Task.fail(err) }
