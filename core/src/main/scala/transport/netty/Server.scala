@@ -18,7 +18,6 @@
 package remotely
 package transport.netty
 
-import cats.data.Xor
 import fs2.{async,pipe,Strategy,Stream,Task}
 import java.util.concurrent.Executors
 import io.netty.channel._, socket.SocketChannel, nio.NioEventLoopGroup

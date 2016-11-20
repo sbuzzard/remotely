@@ -18,7 +18,6 @@
 
 package object remotely {
   import cats.Monad
-  import cats.data.Xor
   import cats.implicits._
   import fs2._
   import fs2.interop.cats._
@@ -60,7 +59,7 @@ package object remotely {
       t.bestEffortOnFinish {
         case Some(e) =>
           Task.delay {
-            M.handled(ctx, r, refs, Xor.left(e), Duration.fromNanos(System.nanoTime - startNanos))
+            M.handled(ctx, r, refs, Left(e), Duration.fromNanos(System.nanoTime - startNanos))
           }
         case None => Task.now(())
       }
@@ -79,12 +78,12 @@ package object remotely {
           { e =>
             val ex = ServerException(e)
             val delta = System.nanoTime - start
-            M.handled(ctx, r, Remote.refs(r), Xor.left(ex), Duration.fromNanos(delta))
+            M.handled(ctx, r, Remote.refs(r), Left(ex), Duration.fromNanos(delta))
             Task.fail(ex)
           },
           { a =>
             val delta = System.nanoTime - start
-            M.handled(ctx, r, refs, Xor.right(a), Duration.fromNanos(delta))
+            M.handled(ctx, r, refs, Right(a), Duration.fromNanos(delta))
             Task.now(a)
           }
         )
@@ -98,7 +97,7 @@ package object remotely {
   implicit class RemotelyEnrichedAttempt[A](val self: Attempt[A]) extends AnyVal {
     def toTask: Task[A] = toTask(err => new IllegalArgumentException(err.messageWithContext))
     def toTask(f: Err => Throwable): Task[A] = self.fold(e => Task.fail(f(e)), Task.now)
-    def toXor: Err Xor A = self.fold(Xor.left, Xor.right)
+    def toEither: Either[Err, A] = self.fold(Left.apply, Right.apply)
   }
 
   def once[F[_], A](s: Stream[F, A]): Stream[F, A] = s.through(pipe.covary[F, A, A](echo1)).through(pipe.take(1))

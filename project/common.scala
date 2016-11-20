@@ -52,8 +52,8 @@ object common {
   val scalaCheckVersion = SettingKey[String]("scalacheck version")
 
   def testSettings = Seq(
-    scalaTestVersion     := "2.2.5",
-    scalaCheckVersion    := "1.11.6",
+    scalaTestVersion     := "3.0.1",
+    scalaCheckVersion    := "1.13.4",
     libraryDependencies ++= Seq(
       "org.scalatest"  %% "scalatest"  % scalaTestVersion.value  % "test",
       "org.scalacheck" %% "scalacheck" % scalaCheckVersion.value % "test"

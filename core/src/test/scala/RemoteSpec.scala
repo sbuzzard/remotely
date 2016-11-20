@@ -22,17 +22,20 @@ import cats.implicits._
 import fs2.{ Strategy, Task }
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
+import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
+import org.scalatest.matchers.{Matcher,MatchResult}
+import org.scalatest.prop.GeneratorDrivenPropertyChecks
 import org.scalacheck._
 import Prop._
 import transport.netty._
 
 import natural.eq._
 
-object RemoteSpec extends Properties("Remote") {
+class RemoteSpec extends FlatSpec with Matchers with BeforeAndAfterAll with GeneratorDrivenPropertyChecks {
   import codecs._
   import Remote.implicits._
 
-  val env = Environment.empty
+  private val env = Environment.empty
     .codec[Int]
     .codec[Double]
     .codec[List[Int]]
@@ -50,35 +53,47 @@ object RemoteSpec extends Properties("Remote") {
       .declare("add1", (d: List[Int]) => Response.now(d.map(_ + 1):List[Int]))
     }
 
-  val addr = new InetSocketAddress("localhost", 8082)
-  val server = env.serve(addr).unsafeRun
-  implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
-  val nettyTrans = NettyTransport.single(addr).unsafeRun
-  val loc: Endpoint = Endpoint.single(nettyTrans)
+  private implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
+  private val addr = new InetSocketAddress("localhost", 8082)
+  private val server = env.serve(addr).unsafeRun
+  private val nettyTrans = NettyTransport.single(addr).unsafeRun
+  private val loc: Endpoint = Endpoint.single(nettyTrans)
 
-  val sum = Remote.ref[List[Int] => Int]("sum")
-  val sumD = Remote.ref[List[Double] => Double]("sum")
-  val mapI = Remote.ref[List[Int] => List[Int]]("add1")
-  val add3 = Remote.ref[(Int, Int, Int) => Int]("add3")
+  private val sum = Remote.ref[List[Int] => Int]("sum")
+  private val sumD = Remote.ref[List[Double] => Double]("sum")
+  private val mapI = Remote.ref[List[Int] => List[Int]]("add1")
+  private val add3 = Remote.ref[(Int, Int, Int) => Int]("add3")
 
-  val ctx = Response.Context.empty
+  private val ctx = Response.Context.empty
 
-  property("roundtrip") =
+  override def afterAll() {
+    server.unsafeRun
+    nettyTrans.pool.close()
+  }
+
+  behavior of "roundtrip sum of List[Int]"
+  it should "work" in {
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.sum === sum(l).runWithoutContext(loc).unsafeRun
+      l.sum shouldBe sum(l).runWithoutContext(loc).unsafeRun
     }
+  }
 
-  property("roundtrip[Double]") =
+  behavior of "roundtrip sum of List[Double]"
+  it should "work" in {
     forAll { (l: List[Double], kvs: Map[String,String]) =>
-      l.sum === sumD(l).runWithContext(loc, ctx ++ kvs).unsafeRun
+      l.sum shouldBe sumD(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
+  }
 
-  property("roundtrip[List[Int]]") =
+  behavior of "roundtrip map of List[Int]"
+  it should "work" in {
     forAll { (l: List[Int], kvs: Map[String,String]) =>
-      l.map(_ + 1) === mapI(l).runWithContext(loc, ctx ++ kvs).unsafeRun
+      l.map(_ + 1) shouldBe mapI(l).runWithContext(loc, ctx ++ kvs).unsafeRun
     }
+  }
 
-  property("check-serializers") = secure {
+  behavior of "check-serializers"
+  it should "work" in {
     // verify that server returns a meaningful error when it asks for
     // decoder(s) the server does not know about
     val wrongsum = Remote.ref[List[Float] => Float]("sum")
@@ -90,10 +105,11 @@ object RemoteSpec extends Properties("Remote") {
         true
       },
       a => false
-    )
+    ) shouldBe true
   }
 
-  property("check-declarations") = secure {
+  behavior of "check-declarations"
+  it should "work" in {
     // verify that server returns a meaningful error when client asks
     // for a remote ref that is unknown
     val wrongsum = Remote.ref[List[Int] => Int]("product")
@@ -105,71 +121,15 @@ object RemoteSpec extends Properties("Remote") {
         true
       },
       a => false
-    )
+    ) shouldBe true
   }
 
-  property("add3") =
+  behavior of "roundtrip map of add3 Ints"
+  it should "work" in {
     forAll { (one: Int, two: Int, three: Int) =>
-      add3(one, two, three).runWithoutContext(loc).unsafeRun === (one + two + three)
+      add3(one, two, three).runWithoutContext(loc).unsafeRun shouldBe (one + two + three)
     }
-/* These take forever on travis, and so I'm disabling them, we should leave benchmarking of scodec to scodec and handle benchmarking of remotely in the benchmarking sub-projects
-
-  property("encoding speed") = {
-    val N = 2000
-    val M = 1024
-    val ints = List.range(0, M)
-    val c = scodec.Codec[List[Int]]
-    val t = time {
-      (0 until N).foreach { _ => c.encode(ints); () }
-    }
-    println { "took " + t / 1000.0 +"s to encode " + (M*N*4 / 1e6) + " MB" }
-    true
   }
 
-  property("decoding speed") = {
-    val N = 2000
-    val M = 1024
-    val ints = List.range(0, M)
-    val c = scodec.Codec[List[Int]]
-    val bits = c.encodeValid(ints)
-    val t = time {
-      (0 until N).foreach { _ => c.decode(bits); () }
-    }
-    println { "took " + t / 1000.0 +"s to decode " + (M*N*4 / 1e6) + " MB" }
-    true
-  }
-
-  property("round trip speed") = {
-    val l: List[Int] = List(1)
-    val N = 5000
-    val t = time {
-      (0 until N).foreach { _ => sum(l).runWithContext(loc, ctx).unsafeRun; () }
-    }
-    println { "round trip took average of: " + (t/N.toDouble) + " milliseconds" }
-    true
-  }
- */
-
-  // NB: this property should always appear last, so it runs after all properties have run
-  property("cleanup") = lazily {
-    server.unsafeRun
-    nettyTrans.pool.close()
-    true
-  }
-
-  def time(a: => Unit): Long = {
-    val start = System.currentTimeMillis
-    a
-    System.currentTimeMillis - start
-  }
-
-  def prettyError(msg: String): String = {
-    msg.take(msg.indexOfSlice("stack trace:"))
-  }
-
-  def lazily(p: => Prop): Prop = {
-    lazy val pe = secure { p }
-    new Prop { def apply(p: org.scalacheck.Gen.Parameters) = pe(p) }
-  }
-
+  private def prettyError(msg: String) = msg.take(msg.indexOfSlice("stack trace:"))
 }

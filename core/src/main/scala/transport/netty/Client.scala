@@ -18,7 +18,7 @@
 package remotely
 package transport.netty
 
-import cats.data.Xor
+import cats.implicits._
 
 import fs2.{async,pipe,Strategy,Stream,Task}
 
@@ -42,7 +42,7 @@ class NettyTransport(val pool: NettyConnectionPool)(implicit S: Strategy) extend
       val toFrame = toServer.map(Bits(_)) ++ Stream.emit(EOS)
       val writeBytes: Task[Unit] = toFrame.evalMap(write(qc.c)).run flatMap { _ => Task.delay { val _ = qc.c.flush } }
       Stream.eval(writeBytes.async(S)).flatMap(_ => qc.q.dequeue.through(pipe.unNoneTerminate andThen unLeftFail)).append(Stream.eval_(fromNettyFuture(pool.release(qc.c)))).onError { t =>
-        Xor.catchNonFatal(qc.c.close)
+        Either.catchNonFatal(qc.c.close)
         Stream.eval(fromNettyFuture(pool.release(qc.c))) flatMap { _ => Stream.fail(t) }
       }
     }

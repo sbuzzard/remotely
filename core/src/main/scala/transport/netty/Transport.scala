@@ -18,7 +18,6 @@
 package remotely
 package transport.netty
 
-import cats.data.Xor
 import cats.implicits._
 
 import fs2.{async,Strategy,Task}
@@ -143,7 +142,7 @@ class Deframe extends ByteToMessageDecoder {
     }
   }
   override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
-    if (ctx.pipeline.last === this) Xor.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
+    if (ctx.pipeline.last === this) Either.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
     ()
   }
 }

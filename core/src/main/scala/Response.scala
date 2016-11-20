@@ -18,7 +18,6 @@
 package remotely
 
 import cats.{Applicative,Monad}
-import cats.data.Xor
 import cats.implicits._
 
 import fs2.{Strategy,Task}
@@ -38,13 +37,13 @@ sealed trait Response[+A] {
   def apply(c: Context): Task[A]
 
   def flatMap[B](f: A => Response[B]): Response[B] =
-    Response { ctx => Task.suspend { this(ctx).flatMap(f andThen (_(ctx))) }}
+    Response { ctx => Task.suspend { this(ctx).flatMap(f andThen (_(ctx))) } }
 
   def map[B](f: A => B): Response[B] =
-    Response { ctx => Task.suspend { this(ctx) map f }}
+    Response { ctx => Task.suspend { this(ctx) map f } }
 
-  def attempt: Response[Xor[Throwable, A]] =
-    Response { ctx => Task.suspend { this(ctx).attempt.map(_.toXor) }}
+  def attempt: Response[Either[Throwable, A]] =
+    Response { ctx => Task.suspend { this(ctx).attempt } }
 
   /** Modify the asynchronous result of this `Response`. */
   def edit[B](f: Task[A] => Task[B]): Response[B] =
@@ -67,7 +66,7 @@ object Response {
     override def delay[A](a: => A): Response[A] = Response.delay(a)
     def suspend[A](ra: => Response[A]) = Response.suspend(ra)
     def fail[A](err: Throwable): Response[A] = Response.fail(err)
-    def attempt[A](ra: Response[A]): Response[Either[Throwable, A]] = ra.attempt map { _.toEither }
+    def attempt[A](ra: Response[A]): Response[Either[Throwable, A]] = ra.attempt
     def unsafeRunAsync[A](ra: Response[A])(cb: Either[Throwable, A] => Unit): Unit = ra(Context.empty).unsafeRunAsync(cb)
     override def toString = "Async[Response]"
 

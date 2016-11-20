@@ -1,7 +1,9 @@
 
 organization in Global := "oncue.remotely"
 
-scalaVersion in Global := "2.11.8"
+crossScalaVersions in Global := Seq("2.12.0", "2.11.8")
+
+scalaVersion in Global := crossScalaVersions.value.head
 
 resolvers += Resolver.sonatypeRepo("releases")
 

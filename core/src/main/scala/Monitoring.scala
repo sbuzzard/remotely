@@ -10,14 +10,11 @@
 //:   Unless required by applicable law or agreed to in writing, software
 //:   distributed under the License is distributed on an "AS IS" BASIS,
 //:   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//:   See the License for the specific language governing permissions and
-//:   limitations under the License.
+//:   See the License for the specific language governing permissions and :   limitations under the License.
 //:
 //: ----------------------------------------------------------------------------
 
 package remotely
-
-import cats.data.Xor
 
 import java.net.InetSocketAddress
 import java.net.SocketAddress
@@ -37,7 +34,7 @@ trait Monitoring { self =>
   def handled[A](ctx: Response.Context,
                  req: Remote[A],
                  references: Iterable[String],
-                 result: Xor[Throwable, A],
+                 result: Either[Throwable, A],
                  took: Duration): Unit
 
   def negotiating(addr: Option[SocketAddress],
@@ -57,7 +54,7 @@ trait Monitoring { self =>
     override def handled[A](ctx: Response.Context,
                    req: Remote[A],
                    references: Iterable[String],
-                   result: Xor[Throwable, A],
+                   result: Either[Throwable, A],
                    took: Duration): Unit = {
       self.handled(ctx, req, references, result, took)
       other.handled(ctx, req, references, result, took)
@@ -92,7 +89,7 @@ trait Monitoring { self =>
       override def handled[A](ctx: Response.Context,
                      req: Remote[A],
                      references: Iterable[String],
-                     result: Xor[Throwable,  A],
+                     result: Either[Throwable,  A],
                      took: Duration): Unit = maybe(self.handled(ctx, req, references, result, took))
 
       override def negotiating(addr: Option[SocketAddress],
@@ -109,7 +106,7 @@ object Monitoring {
     override def handled[A](ctx: Response.Context,
                             req: Remote[A],
                             references: Iterable[String],
-                            result: Xor[Throwable,  A],
+                            result: Either[Throwable,  A],
                             took: Duration): Unit = ()
 
     override def negotiating(addr: Option[SocketAddress], what: String, error: Option[Throwable]): Unit = ()
@@ -124,7 +121,7 @@ object Monitoring {
     def handled[A](ctx: Response.Context,
                    req: Remote[A],
                    references: Iterable[String],
-                   result: Xor[Throwable,  A],
+                   result: Either[Throwable,  A],
                    took: Duration): Unit = {
       println(s"$prefix ----------------")
       println(s"$prefix header: " + ctx.header)

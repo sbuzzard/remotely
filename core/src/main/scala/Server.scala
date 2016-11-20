@@ -18,7 +18,6 @@
 package remotely
 
 import cats.Monad
-import cats.data.Xor
 import cats.implicits._
 
 import fs2._
@@ -65,23 +64,23 @@ object Server {
           a =>
           val deltaNanos = System.nanoTime - startNanos
           val delta = Duration.fromNanos(deltaNanos)
-          val result = Xor.right(a)
+          val result = Right(a)
           monitoring.handled(ctx, r, expected, result, delta)
           toTask(codecs.responseEncoder(respEncoder).encode(Successful(a)))
-        }.attempt.map(_.toXor).flatMap {
+        }.attempt.flatMap {
           // this is a little convoluted - we catch this exception just so
           // we can log the failure using `monitoring`, then reraise it
           _.fold(
             e => {
               val deltaNanos = System.nanoTime - startNanos
               val delta = Duration.fromNanos(deltaNanos)
-              monitoring.handled(ctx, r, expected, Xor.left(e), delta)
+              monitoring.handled(ctx, r, expected, Left(e), delta)
               Task.fail(e)
             },
             bits => Task.now(bits)
           )
         }
-    }}.attempt.map(_.toXor).flatMap { _.fold(
+    }}.attempt.flatMap { _.fold(
       e => toTask(codecs.responseEncoder(codecs.utf8).encode(Attempt.failure(Err(formatThrowable(e))))),
       bits => Task.now(bits)
                         )}

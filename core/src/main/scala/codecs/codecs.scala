@@ -18,7 +18,6 @@
 package remotely
 
 import cats.Monad
-import cats.data.Xor
 import cats.implicits._
 
 import fs2.Task
@@ -56,16 +55,19 @@ package object codecs extends lowerprioritycodecs {
   implicit val scodecDecoderMonadInstance: Monad[Decoder] = new Monad[Decoder] {
     def pure[A](a: A) = Decoder.point(a)
     def flatMap[A, B](fa: Decoder[A])(f: A => Decoder[B]) = fa flatMap f
-    def tailRecM[A, B](a: A)(f: A => Decoder[Either[A, B]]): Decoder[B] = defaultTailRecM(a)(f)
+    def tailRecM[A, B](a: A)(f: A => Decoder[Either[A, B]]): Decoder[B] = flatMap(f(a)) {
+      case Right(b) => pure(b)
+      case Left(a2) => tailRecM(a2)(f)
+    }
   }
 
   implicit def tuple2[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Lazy[Codec[(A,B)]] =
     LCA.value ~ LCB.value
 
-  implicit def either[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[Xor[A, B]] =
-    C.discriminated[Xor[A, B]].by(bool)
-    .| (false) { case Xor.Left(l) => l } (Xor.left) (Codec[A])
-    .| (true)  { case Xor.Right(r) => r } (Xor.right) (Codec[B])
+  implicit def either[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[Either[A, B]] =
+    C.discriminated[Either[A, B]].by(bool)
+    .| (false) { case Left(l) => l } (Left.apply) (Codec[A])
+    .| (true)  { case Right(r) => r } (Right.apply) (Codec[B])
 
   implicit def stdEither[A, B](implicit LCA: Lazy[Codec[A]], LCB: Lazy[Codec[B]]): Codec[Either[A,B]] =
     C.either(bool, Codec[A], Codec[B])
@@ -232,9 +234,9 @@ package object codecs extends lowerprioritycodecs {
       }
     } yield (responseEncoder, ctx, r)
 
-  def responseDecoder[A](implicit LDA: Lazy[Decoder[A]]): Decoder[Xor[String, A]] = bool flatMap {
-    case false => utf8.map(Xor.left)
-    case true => Decoder[A].map(Xor.right)
+  def responseDecoder[A](implicit LDA: Lazy[Decoder[A]]): Decoder[Either[String, A]] = bool flatMap {
+    case false => utf8.map(Left.apply)
+    case true => Decoder[A].map(Right.apply)
   }
 
   def responseEncoder[A](implicit LEA: Lazy[Encoder[A]]) = new Encoder[Attempt[A]] {

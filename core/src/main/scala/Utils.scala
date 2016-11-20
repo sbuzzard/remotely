@@ -16,8 +16,6 @@
 //: ----------------------------------------------------------------------------
 package remotely
 
-import cats.data.Xor
-
 import fs2.Task
 
 import scodec.Attempt.{Successful, Failure}
@@ -26,12 +24,6 @@ import scodec.{Attempt, Err}
 import remotely.codecs.DecodingFailure
 
 package object utils {
-  implicit class AugmentedXor[E,A](a: Xor[E, A]) {
-    def toTask(implicit conv: E => Throwable): Task[A] = a match {
-      case Xor.Left(e) => Task.fail(conv(e))
-      case Xor.Right(a) => Task.now(a)
-    }
-  }
   implicit class AugmentedEither[E,A](a: Either[E, A]) {
     def toTask(implicit conv: E => Throwable): Task[A] = a match {
       case Left(e) => Task.fail(conv(e))

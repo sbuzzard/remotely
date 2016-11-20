@@ -18,7 +18,6 @@
 package remotely
 package transport.netty
 
-import cats.data.Xor
 import cats.implicits._
 
 import fs2.{Strategy,Stream,Task}
@@ -82,7 +81,7 @@ class CloseOnIdleStateHandler extends ChannelDuplexHandler {
   override def userEventTriggered(ctx: ChannelHandlerContext, evt: Object): Unit = {
     evt match {
       case ise: IdleStateEvent if ise.state === IdleState.ALL_IDLE =>
-        Xor.catchNonFatal(ctx.close())
+        Either.catchNonFatal(ctx.close())
         ()
       case _ =>
         ()
@@ -90,7 +89,7 @@ class CloseOnIdleStateHandler extends ChannelDuplexHandler {
     ()
   }
   override def exceptionCaught(ctx: ChannelHandlerContext, ee: Throwable): Unit = {
-    if (ctx.pipeline.last === this) Xor.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
+    if (ctx.pipeline.last === this) Either.catchNonFatal(ctx.close()) else super.exceptionCaught(ctx, ee)
     ()
   }
 }
@@ -180,7 +179,7 @@ class NettyConnectionPool(host: InetSocketAddress,
     private[this] def fail(msg: String): Unit = {
       val err = IncompatibleServer(msg)
 
-      val _ = Xor.catchNonFatal { channel.pipeline().removeLast() }
+      val _ = Either.catchNonFatal { channel.pipeline().removeLast() }
 
       M.negotiating(Some(host), "description", Some(err))
       cb(Left(err))
@@ -281,11 +280,11 @@ class NettyConnectionPool(host: InetSocketAddress,
       buffer.readBytes(bytes)
       val str = new String(bytes, "UTF-8")
       M.negotiating(None, s"received capabilities string: $str", None)
-      val r = Capabilities.parseHelloString(str).toXor.bimap(
+      val r = Capabilities.parseHelloString(str).toEither.bimap(
         (e: Err) => new IllegalArgumentException(e.message),
         (cap: Capabilities) => (cap,ctx.channel)
       )
-      callback.setResult(r.toEither)
+      callback.setResult(r)
       r
     }
   }
