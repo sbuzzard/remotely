@@ -19,14 +19,16 @@ package remotely
 
 import cats.data.OptionT
 import cats.implicits._
-import fs2.{Strategy,Stream,Task}
+import fs2._
 import fs2.interop.cats._
 
 import org.scalatest.matchers.{Matcher,MatchResult}
 import org.scalatest.{FlatSpec,Matchers,BeforeAndAfterAll}
 import java.io.File
 import java.nio.file.Paths
+import java.util.concurrent.Executors
 import Response.Context
+import scala.concurrent.duration._
 import transport.netty._
 import codecs._
 
@@ -83,6 +85,7 @@ class SSLSpec extends FlatSpec
   val addr = new java.net.InetSocketAddress("localhost", 9101)
   val server = new TestServer
   implicit val S: Strategy = Strategy.fromExecutor(fixedNamedThreadPool("test-strategy"))
+  implicit val Sch: Scheduler = Scheduler.fromScheduledExecutorService(Executors.newSingleThreadScheduledExecutor)
 
   it should "be able to do client authentication" in {
     import remotely.Remote.implicits._
@@ -183,16 +186,7 @@ class SSLSpec extends FlatSpec
 
       val fact = evaluate(endpoint, Monitoring.consoleLogger())(Client.factorial(10)).apply(Context.empty)
 
-      an[io.netty.handler.ssl.NotSslRecordException] should be thrownBy (
-        try {
-          val _ = fact.unsafeRun
-        } catch {
-          case t: io.netty.handler.ssl.NotSslRecordException =>
-            throw t
-          case t: Throwable =>
-            t.printStackTrace
-            throw t
-        })
+      an[java.util.concurrent.TimeoutException] should be thrownBy (fact.unsafeTimed(2.seconds).unsafeRun)
     } finally {
       shutdown.unsafeRun
       transport.shutdown.unsafeRun
